@@ -12,11 +12,16 @@ The full scientific explanation of the design, with the mathematics, is in
 
 ## Installation
 
-**Windows (easiest):** install Python 3.12 from <https://www.python.org/downloads/>
-(tick *Add python.exe to PATH*), then double-click **`install_windows.bat`** once
-and afterwards **`start_windows.bat`** to start the program. The program opens in
-your web browser at <http://localhost:8501>; keep the black console window open
-while you work (closing it quits the program).
+**Windows (easiest):**
+1. Install Python 3.12 from <https://www.python.org/downloads/> (tick *Add python.exe to PATH*).
+2. Double-click **`install_windows.bat`** once. It installs everything and puts an
+   **"AuNW Analysis" icon (a beaker with gold nanowires)** on your desktop and in the start menu.
+3. From then on, just click the icon: the program opens in its own window.
+   Closing the window quits the program.
+
+`start_windows.bat` is an alternative that shows a console with log messages
+and opens the program in the web browser (useful when something goes wrong).
+Log files are in `%LOCALAPPDATA%\AuNWAnalysis`.
 
 **Manual installation (all systems):**
 
@@ -34,12 +39,19 @@ pip install -r requirements.txt
 
 ## Start the program
 
+Click the desktop icon (Windows), or run the desktop window on any system:
+
+```bash
+python desktop.py
+```
+
+or, for the browser version:
+
 ```bash
 streamlit run app.py
 ```
 
-The browser opens at `http://localhost:8501`. The blue column on the left
-lists the workflow steps, and the main area shows the selected step:
+The blue column on the left lists the workflow steps, and the main area shows the selected step:
 
 | Step | What you do |
 |------|-------------|
@@ -52,7 +64,7 @@ lists the workflow steps, and the main area shows the selected step:
 | 7 · Results & export | summary statistics, histograms with fits; CSV, Excel, PNG/SVG/PDF, ZIP |
 | 8 · Improve with real data | fine-tune the network on your own annotated micrographs |
 
-A ready-to-use network (`models/cpu_starter_f16`, trained for 2 h on a CPU) is
+A ready-to-use network is
 included, so you can start analysing images in step 5 straight away. Training
 started from the GUI runs as a separate process (`python -m aunw.cli train …`),
 so it continues even if the browser is closed.

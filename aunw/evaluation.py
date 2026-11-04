@@ -62,6 +62,7 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
             w, g = wires[di], gt.loc[gid]
             wire_rows.append({"image": f.name, "true_length": g.length_px, "true_width": g.width_px,
                               "length": w["length_px"], "width": w["width_px"],
+                              "width_profile": w.get("width_profile_px", np.nan),
                               "complete": w["complete"], "true_inside": bool(g.inside)})
 
         # --- 3) sample level: what a user compares (statistics of one image)
@@ -101,6 +102,8 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
             f"{tag}: length within 10 % fraction": float((rel_l.abs() < 0.1).mean()) if len(c) else np.nan,
             f"{tag}: width median rel. error %": 100 * rel_w.median(),
             f"{tag}: width within 10 % fraction": float((rel_w.abs() < 0.1).mean()) if len(w) else np.nan,
+            f"{tag}: profile width within 10 % fraction":
+                float(((w.width_profile - w.true_width).abs() / w.true_width < 0.1).mean()) if len(w) else np.nan,
             f"{tag}: per-image |median length bias| %": p["median_length_bias_%"].abs().median(),
             f"{tag}: per-image |stereological mean length bias| %":
                 p["stereological_mean_length_bias_%"].abs().median(),
