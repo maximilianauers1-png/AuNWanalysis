@@ -34,7 +34,11 @@ def per_image_table(results) -> pd.DataFrame:
             "nm_per_px": r.nm_per_px, "analysis_scale": r.scale,
             "wires_total": len(d), "wires_complete": int(d["complete"].sum()) if len(d) else 0,
             "wires_touching_border": int(d["touches_border"].sum()) if len(d) else 0,
+            "coverage": r.info.get("coverage"), "reliability": r.info.get("reliability"),
             "crossing_resolution": r.info.get("crossing_resolution"),
+            "stereological_mean_length_px": r.info.get("stereological_mean_length_px"),
+            "stereological_mean_length_nm": (r.info.get("stereological_mean_length_px", np.nan)
+                                             * r.nm_per_px) if r.nm_per_px else np.nan,
             "junctions": r.info.get("n_junctions"),
             "median_length_px_complete": d.loc[d["complete"], "length_px"].median() if len(d) else np.nan,
             "median_width_px": d["width_px"].median() if len(d) else np.nan,

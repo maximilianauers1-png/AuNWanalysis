@@ -1,4 +1,8 @@
-"""Step 3: train the network and watch it learn (live)."""
+"""Step 3: train the network and watch it learn (live).
+
+Training runs as a separate process (the same command as on the terminal);
+this page only starts it and follows <model_dir>/progress.json.
+"""
 from datetime import datetime
 from pathlib import Path
 
@@ -7,7 +11,8 @@ import streamlit as st
 
 from aunw.config import MODELS_DIR, TrainConfig
 from aunw.plots import prediction_preview, training_curves
-from aunw.training import TrainingMonitor, overfitting_report, run_in_background, train, model_file
+from aunw.training import (TrainingMonitor, model_file, overfitting_report, request_stop,
+                           start_process)
 from ui import common
 
 
@@ -24,9 +29,11 @@ def _settings() -> tuple[TrainConfig, str, str | None]:
     cfg.early_stop_patience = c[0].number_input("Early-stopping patience", 2, 100, cfg.early_stop_patience,
                                                 help="Stop after this many epochs without "
                                                      "improvement of the validation loss.")
-    cfg.lr_patience = c[1].number_input("LR-halving patience", 1, 50, cfg.lr_patience)
     cfg.augment = c[2].toggle("Data augmentation", cfg.augment)
     cfg.mixed_precision = c[3].toggle("Mixed precision (GPU)", cfg.mixed_precision)
+    st.session_state["data_dir"] = st.text_input(
+        "Dataset folder (from step 1)", st.session_state["data_dir"],
+        help="Folder containing train.npz and val.npz.")
     c = st.columns([2, 2])
     mcfg = st.session_state["model_cfg"]
     name = c[0].text_input("Name of the new model",
@@ -38,15 +45,38 @@ def _settings() -> tuple[TrainConfig, str, str | None]:
     return cfg, name, init
 
 
+def is_running() -> bool:
+    proc = common.trainer_slot()["process"]
+    return proc is not None and proc.poll() is None
+
+
+def launch(args: list[str], model_dir: Path) -> None:
+    slot = common.trainer_slot()
+    slot["process"] = start_process(args, model_dir)
+    slot["model_dir"] = str(model_dir)
+    slot["command"] = "python -m aunw.cli " + " ".join(args)
+
+
 @st.fragment(run_every=3)
 def monitor_panel() -> None:
-    mon: TrainingMonitor | None = common.trainer_slot()["monitor"]
-    if mon is None:
+    slot = common.trainer_slot()
+    if not slot["model_dir"]:
         st.info("No training run in this session yet.")
         return
-    s = mon.snapshot()
-    if s["status"] == "error":
-        st.error("Training failed:\n\n" + s["message"])
+    s = TrainingMonitor.load(slot["model_dir"])
+    proc = slot["process"]
+    crashed = proc is not None and proc.poll() not in (None, 0)
+    if s is None or s["status"] == "error" or (crashed and s["status"] in ("starting", "running")):
+        log = Path(slot["model_dir"]) / "train.log"
+        tail = log.read_text()[-3000:] if log.exists() else ""
+        if crashed or (s and s["status"] == "error"):
+            st.error("Training stopped with an error. Last lines of the log:")
+            st.code(tail or (s or {}).get("message", ""))
+        else:
+            st.info("Starting the training process …")
+        return
+    if s["status"] == "starting":
+        st.info("Starting the training process (loading data, building the network) …")
         return
     h = pd.DataFrame(s["history"])
     rep = overfitting_report(h)
@@ -55,6 +85,7 @@ def monitor_panel() -> None:
     st.progress(min(1.0, (max(s["epoch"] - 1, 0) + frac_epoch) / max(s["total_epochs"], 1)),
                 f"{s['status'].upper()} · epoch {s['epoch']}/{s['total_epochs']} · "
                 f"step {s['step']}/{s['steps_per_epoch']} · {s['elapsed'] / 60:.1f} min")
+    st.caption(f"Command: `{slot.get('command', '')}` · log: `{slot['model_dir']}/train.log`")
     if s["status"] in ("finished", "stopped"):
         st.success(s["message"] + (" (stopped by user; best epoch kept)" if s["status"] == "stopped" else ""))
 
@@ -81,17 +112,15 @@ def monitor_panel() -> None:
         st.caption("Loss of every training batch (noisy by nature; the trend matters)")
         st.line_chart(pd.DataFrame({"batch loss": s["batch_loss"]}), height=160)
     if s["preview"]:
-        st.markdown(f"**Validation examples after epoch {s['preview']['epoch']}**")
+        st.markdown(f"**Validation examples after epoch {int(s['preview']['epoch'])}**")
         st.pyplot(prediction_preview(s["preview"]), width="stretch")
 
 
 def render() -> None:
     common.header(3, "Training", "Teach the network on the synthetic dataset and monitor it live.")
-    slot = common.trainer_slot()
-    running = slot["monitor"] is not None and slot["monitor"].status == "running"
-
+    running = is_running()
     if not common.dataset_ready():
-        st.warning("No dataset found. Generate one in step 1 first.")
+        st.warning("No dataset found. Generate one in step 1 or enter its folder below.")
     with st.expander("Settings", expanded=not running):
         cfg, name, init = _settings()
         with st.popover("ℹ️ How over-fitting is prevented"):
@@ -104,17 +133,21 @@ def render() -> None:
 
     c = st.columns([1, 1, 3])
     if c[0].button("▶ Start training", type="primary", disabled=running or not common.dataset_ready()):
-        mon = TrainingMonitor()
-        slot["monitor"] = mon
-        slot["thread"] = run_in_background(
-            train, mon, model_dir=MODELS_DIR / name, data_dir=Path(st.session_state["data_dir"]),
-            model_cfg=st.session_state["model_cfg"], train_cfg=cfg,
-            init_from=Path(init) if init else None)
+        mcfg = st.session_state["model_cfg"]
+        args = ["train", "--data", st.session_state["data_dir"], "--out", str(MODELS_DIR / name),
+                "--epochs", str(cfg.epochs), "--batch-size", str(cfg.batch_size),
+                "--lr", str(cfg.learning_rate), "--weight-decay", str(cfg.weight_decay),
+                "--patience", str(cfg.early_stop_patience), "--base-filters", str(mcfg.base_filters),
+                "--depth", str(mcfg.depth), "--dropout", str(mcfg.dropout)]
+        args += ["--init", init] if init else []
+        args += [] if cfg.augment else ["--no-augment"]
+        args += ["--mixed-precision"] if cfg.mixed_precision else []
+        launch(args, MODELS_DIR / name)
         st.session_state["model_dir"] = str(MODELS_DIR / name)
         st.rerun()
     if c[1].button("■ Stop", disabled=not running):
-        slot["monitor"].stop_event.set()
-        st.toast("Stopping after the current batch …")
-    c[2].caption("Training runs in the background: you can switch steps meanwhile. "
-                 "Detailed logs: `tensorboard --logdir models`.")
+        request_stop(Path(common.trainer_slot()["model_dir"]))
+        st.toast("Stopping after the current batch – the best epoch is kept …")
+    c[2].caption("Training runs as a separate process: you can switch steps or even close the "
+                 "browser meanwhile. Detailed logs: `tensorboard --logdir models`.")
     monitor_panel()

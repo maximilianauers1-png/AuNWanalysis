@@ -202,3 +202,17 @@ def test_databar_detection():
     img = normalize(np.random.default_rng(0).random((400, 300)))
     img = np.vstack([img, np.zeros((50, 300), np.float32)])
     assert detect_databar(img) == 50
+
+
+# --------------------------------------------------------------------------- training (end to end)
+def test_training_run_saves_model(tmp_path):
+    from aunw.config import TrainConfig
+    from aunw.dataset import generate_dataset
+    from aunw.training import TrainingMonitor, train
+    generate_dataset(tmp_path / "data", SyntheticConfig(), n_train=16, n_val=8, n_test=0, workers=1)
+    mon = TrainingMonitor()
+    train(tmp_path / "model", tmp_path / "data", ModelConfig(base_filters=4, depth=2),
+          TrainConfig(epochs=1, batch_size=4), monitor=mon)
+    assert (tmp_path / "model" / "model.keras").exists()
+    assert (tmp_path / "model" / "config.json").exists()
+    assert mon.status == "finished" and len(mon.history) == 1 and mon.preview

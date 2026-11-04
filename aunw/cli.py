@@ -2,6 +2,7 @@
 
     python -m aunw.cli generate --out data/synthetic --n-train 1500
     python -m aunw.cli train    --data data/synthetic --out models/my_model --epochs 60
+    python -m aunw.cli finetune --base models/my_model/model.keras --real tiles.npz --out models/ft
     python -m aunw.cli evaluate --model models/my_model --data data/synthetic
     python -m aunw.cli analyze  --model models/my_model --nm-per-px 2.5 images/*.tif --out results/run1
 """
@@ -30,33 +31,44 @@ def cmd_generate(a) -> None:
     print(f"done in {time.time() - t:.0f} s -> {a.out}")
 
 
+def _run_monitored(out: Path, fn, **kwargs) -> None:
+    """Run train()/finetune() with a progress file; record failures there too."""
+    import traceback
+    from .training import TrainingMonitor
+    mon = TrainingMonitor(out)
+    try:
+        fn(monitor=mon, **kwargs)
+        print(mon.message)
+    except Exception as exc:
+        mon.update(force=True, status="error", message=f"{exc}\n{traceback.format_exc()}")
+        raise
+
+
 def cmd_train(a) -> None:
     from .config import ModelConfig, TrainConfig
-    from .training import TrainingMonitor, train
+    from .training import train
     mcfg = ModelConfig(base_filters=a.base_filters, depth=a.depth, dropout=a.dropout)
     tcfg = TrainConfig(epochs=a.epochs, batch_size=a.batch_size, learning_rate=a.lr,
-                       weight_decay=a.weight_decay, mixed_precision=a.mixed_precision)
-    mon = TrainingMonitor()
+                       weight_decay=a.weight_decay, early_stop_patience=a.patience,
+                       augment=not a.no_augment, mixed_precision=a.mixed_precision)
+    _run_monitored(Path(a.out), train, model_dir=Path(a.out), data_dir=Path(a.data),
+                   model_cfg=mcfg, train_cfg=tcfg, init_from=Path(a.init) if a.init else None)
 
-    import threading
-    def report():
-        last = 0
-        while mon.status in ("idle", "running"):
-            time.sleep(5)
-            s = mon.snapshot()
-            if len(s["history"]) > last:
-                last = len(s["history"])
-                h = s["history"][-1]
-                print(f"epoch {h['epoch']:3d}  loss {h['loss']:.4f}  val_loss {h['val_loss']:.4f}  "
-                      f"mask dice {h.get('val_mask_dice_coef', 0):.3f}  "
-                      f"cl dice {h.get('val_centerline_dice_coef', 0):.3f}  "
-                      f"angle err {h.get('val_orientation_angle_error_deg', 0):.1f} deg  "
-                      f"lr {h['lr']:.1e}  {h['seconds']:.0f}s", flush=True)
-    threading.Thread(target=report, daemon=True).start()
-    train(Path(a.out), Path(a.data), mcfg, tcfg, monitor=mon,
-          init_from=Path(a.init) if a.init else None)
-    time.sleep(6)
-    print(mon.message)
+
+def cmd_finetune(a) -> None:
+    import numpy as np
+    from .config import TrainConfig
+    from .dataset import KEYS, load_split
+    from .training import finetune
+    with np.load(a.real) as f:
+        real_train = {k: f[f"train_{k}"] for k in KEYS}
+        real_val = {k: f[f"val_{k}"] for k in KEYS}
+    tcfg = TrainConfig(epochs=a.epochs, batch_size=a.batch_size, learning_rate=a.lr,
+                       early_stop_patience=a.patience)
+    _run_monitored(Path(a.out), finetune, base_model=Path(a.base), model_dir=Path(a.out),
+                   real_train=real_train, real_val=real_val,
+                   synthetic=load_split(Path(a.synthetic)), train_cfg=tcfg,
+                   freeze_encoder=not a.no_freeze, real_fraction=a.real_fraction)
 
 
 def cmd_evaluate(a) -> None:
@@ -117,8 +129,24 @@ def main(argv=None) -> None:
     t.add_argument("--base-filters", type=int, default=24)
     t.add_argument("--depth", type=int, default=4)
     t.add_argument("--dropout", type=float, default=0.15)
+    t.add_argument("--patience", type=int, default=10, help="early-stopping patience")
+    t.add_argument("--no-augment", action="store_true")
     t.add_argument("--mixed-precision", action="store_true")
     t.set_defaults(fn=cmd_train)
+
+    ft = sub.add_parser("finetune", help="adapt a model to annotated real images")
+    ft.add_argument("--base", required=True, help="model file (.keras) to start from")
+    ft.add_argument("--out", required=True)
+    ft.add_argument("--real", required=True,
+                    help="npz with train_/val_ image, mask, centerline, angle tiles")
+    ft.add_argument("--synthetic", default="data/synthetic/train.npz")
+    ft.add_argument("--epochs", type=int, default=20)
+    ft.add_argument("--batch-size", type=int, default=8)
+    ft.add_argument("--lr", type=float, default=1e-4)
+    ft.add_argument("--patience", type=int, default=6)
+    ft.add_argument("--real-fraction", type=float, default=0.5)
+    ft.add_argument("--no-freeze", action="store_true", help="also train the encoder")
+    ft.set_defaults(fn=cmd_finetune)
 
     e = sub.add_parser("evaluate", help="measurement accuracy on synthetic test images")
     e.add_argument("--model", required=True)

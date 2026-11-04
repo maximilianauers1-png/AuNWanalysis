@@ -90,6 +90,8 @@ class AnalysisConfig:
     min_length_px: float = 12.0       # discard shorter objects (network pixels)
     min_aspect_ratio: float = 3.0     # length/width below this is treated as a particle
     exclude_border_from_length: bool = True  # wires cut by the image border have unknown length
+    coverage_reliable: float = 0.30   # above this areal coverage many wire ends are hidden ...
+    coverage_limit: float = 0.45      # ... and above this length statistics are unreliable
 
 
 # --------------------------------------------------------------------------- I/O

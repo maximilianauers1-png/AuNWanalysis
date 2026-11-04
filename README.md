@@ -8,7 +8,7 @@ exportable figures and tables.
 The full scientific explanation of the design, with the mathematics, is in
 **[docs/AuNW_Analysis_Design.pdf](docs/AuNW_Analysis_Design.pdf)**.
 
-![workflow](docs/figures/ui_analyse.png)
+![workflow](docs/figures/ui_analyse.jpg)
 
 ## Installation
 
@@ -44,8 +44,25 @@ lists the workflow steps, and the main area shows the selected step:
 | 7 · Results & export | summary statistics, histograms with fits; CSV, Excel, PNG/SVG/PDF, ZIP |
 | 8 · Improve with real data | fine-tune the network on your own annotated micrographs |
 
-A ready-to-use network (`models/cpu_starter_f16`, trained on a CPU) is
-included, so you can start analysing images in step 5 straight away.
+A ready-to-use network (`models/cpu_starter_f16`, trained for 2 h on a CPU) is
+included, so you can start analysing images in step 5 straight away. Training
+started from the GUI runs as a separate process (`python -m aunw.cli train …`),
+so it continues even if the browser is closed.
+
+## Accuracy (shipped network, synthetic test images with known truth)
+
+| | moderate meshes (coverage 4–44 %) |
+|---|---|
+| Mask Dice | 0.982 |
+| Length of complete wires: median error / within ±10 % | +0.4 % / 92 % |
+| Width: median error / within ±10 % | −0.7 % / 92 % |
+| Per image: typical bias of median length / median width | 4.4 % / 1.2 % |
+
+The width is reliable at every density. Length needs visible wire ends, so
+each image is labelled with its **areal coverage** and a reliability class
+(good ≤ 30 % < caution ≤ 45 % < length unreliable). Each image also gets a
+second, independent stereological mean length, ⟨L⟩ = 2 · total length / number of ends,
+as a cross-check. The details are in the PDF, section 10.
 
 ## Command line (e.g. training on a GPU server)
 

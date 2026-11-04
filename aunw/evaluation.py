@@ -38,8 +38,7 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
                        n_images: int = 12, progress=None) -> dict:
     """Run the full pipeline on synthetic test images and compare with the truth."""
     cfg = cfg or AnalysisConfig()
-    seg_rows, wire_rows, dist_rows = [], [], []
-    pooled = {"true_length": [], "length": [], "true_width": [], "width": []}   # population level
+    seg_rows, wire_rows, img_rows = [], [], []
     files = list_test_images(data_dir)[:n_images]
     for k, f in enumerate(files):
         img = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255
@@ -47,6 +46,7 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
         gt = pd.DataFrame(json.loads(Path(str(f).replace(".png", ".json")).read_text())).set_index("id")
         maps = predict_tiled(model, img, overlap=cfg.tile_overlap, tta=cfg.tta)
 
+        # --- 1) pixel level
         dm, im = dice_iou(lab["mask"], maps["mask"] > cfg.mask_threshold)
         dc, _ = dice_iou(lab["centerline"], maps["centerline"] > cfg.centerline_threshold)
         valid = lab["angle"] < 180
@@ -56,54 +56,60 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
         seg_rows.append({"image": f.name, "mask_dice": dm, "mask_iou": im, "centerline_dice": dc,
                          "angle_error_deg": float(np.degrees(np.minimum(d, np.pi - d)).mean())})
 
+        # --- 2) object level: matched wires
         wires, info = analyze_maps(maps, cfg)
-        match = match_to_ground_truth(wires, lab["instance"])
-        for di, gid in match.items():
+        for di, gid in match_to_ground_truth(wires, lab["instance"]).items():
             w, g = wires[di], gt.loc[gid]
             wire_rows.append({"image": f.name, "true_length": g.length_px, "true_width": g.width_px,
                               "length": w["length_px"], "width": w["width_px"],
                               "complete": w["complete"], "true_inside": bool(g.inside)})
-        inside = gt[gt.inside]
+
+        # --- 3) sample level: what a user compares (statistics of one image)
         det = pd.DataFrame([{k: v for k, v in w.items() if k != "path"} for w in wires])
-        pooled["true_length"] += inside.length_px.tolist()
-        pooled["true_width"] += gt.width_px.tolist()
-        if len(det):
-            pooled["length"] += det.loc[det.complete, "length_px"].tolist()
-            pooled["width"] += det.width_px.tolist()
-        dist_rows.append({"image": f.name, "true_wires_inside": len(inside),
-                          "detected": len(det), "complete": int(det["complete"].sum()) if len(det) else 0,
-                          "crossing_resolution": info["crossing_resolution"],
-                          "true_mean_length": inside.length_px.mean(),
-                          "measured_mean_length_complete":
-                              det.loc[det.complete, "length_px"].mean() if len(det) else np.nan,
-                          "true_mean_width": gt.width_px.mean(),
-                          "measured_mean_width": det.width_px.mean() if len(det) else np.nan})
+        inside = gt[gt.inside]
+        comp = det[det.complete] if len(det) else det
+        bias = lambda a, b: 100 * (a / b - 1)
+        img_rows.append({
+            "image": f.name, "coverage": float(lab["mask"].mean()), "true_wires": len(gt),
+            "detected": len(det), "complete": len(comp),
+            "crossing_resolution": info["crossing_resolution"],
+            "median_length_bias_%": bias(comp.length_px.median(), inside.length_px.median())
+                                    if len(comp) else np.nan,
+            "stereological_mean_length_bias_%": bias(info["stereological_mean_length_px"],
+                                                     gt.length_px.mean()),
+            "median_width_bias_%": bias(det.width_px.median(), gt.width_px.median())
+                                   if len(det) else np.nan})
         if progress:
             progress((k + 1) / len(files))
 
-    seg, wires_df, dist = pd.DataFrame(seg_rows), pd.DataFrame(wire_rows), pd.DataFrame(dist_rows)
-    comp = wires_df[wires_df.complete & wires_df.true_inside] if len(wires_df) else wires_df
-    rel_l = (comp.length - comp.true_length) / comp.true_length if len(comp) else pd.Series(dtype=float)
-    rel_w = ((wires_df.width - wires_df.true_width) / wires_df.true_width
-             if len(wires_df) else pd.Series(dtype=float))
-    summary = {
-        "images": len(files),
-        "mask_dice": seg.mask_dice.mean(), "mask_iou": seg.mask_iou.mean(),
-        "centerline_dice": seg.centerline_dice.mean(), "angle_error_deg": seg.angle_error_deg.mean(),
-        "matched_wires": len(wires_df), "complete_matched_wires": len(comp),
-        "length_median_rel_error_%": 100 * rel_l.median(),
-        "length_within_10%_fraction": float((rel_l.abs() < 0.1).mean()) if len(rel_l) else np.nan,
-        "width_median_rel_error_%": 100 * rel_w.median(),
-        "width_within_10%_fraction": float((rel_w.abs() < 0.1).mean()) if len(rel_w) else np.nan,
-        # population level: all complete measured wires vs all fully visible true wires
-        **{f"population_{stat}_{q}_bias_%": 100 * (fn(pooled[q]) / fn(pooled[f"true_{q}"]) - 1)
-           for q in ("length", "width") for stat, fn in (("mean", np.mean), ("median", np.median))
-           if pooled[q]},
-        "crossing_resolution": dist.crossing_resolution.mean(),
-    }
+    seg, wires_df, per_image = pd.DataFrame(seg_rows), pd.DataFrame(wire_rows), pd.DataFrame(img_rows)
+    reliable = per_image.coverage <= cfg.coverage_reliable
+    summary = {"images": len(files), "images_reliable_coverage": int(reliable.sum()),
+               "mask_dice": seg.mask_dice.mean(), "mask_iou": seg.mask_iou.mean(),
+               "centerline_dice": seg.centerline_dice.mean(),
+               "angle_error_deg": seg.angle_error_deg.mean(),
+               "crossing_resolution": per_image.crossing_resolution.mean()}
+    for tag, sel in (("all", per_image.image), ("reliable", per_image.image[reliable])):
+        w = wires_df[wires_df.image.isin(sel)] if len(wires_df) else wires_df
+        c = w[w.complete & w.true_inside] if len(w) else w
+        rel_l = (c.length - c.true_length) / c.true_length
+        rel_w = (w.width - w.true_width) / w.true_width
+        p = per_image[per_image.image.isin(sel)]
+        summary.update({
+            f"{tag}: complete matched wires": len(c),
+            f"{tag}: length median rel. error %": 100 * rel_l.median(),
+            f"{tag}: length within 10 % fraction": float((rel_l.abs() < 0.1).mean()) if len(c) else np.nan,
+            f"{tag}: width median rel. error %": 100 * rel_w.median(),
+            f"{tag}: width within 10 % fraction": float((rel_w.abs() < 0.1).mean()) if len(w) else np.nan,
+            f"{tag}: per-image |median length bias| %": p["median_length_bias_%"].abs().median(),
+            f"{tag}: per-image |stereological mean length bias| %":
+                p["stereological_mean_length_bias_%"].abs().median(),
+            f"{tag}: per-image |median width bias| %": p["median_width_bias_%"].abs().median(),
+        })
+    comp_all = wires_df[wires_df.complete & wires_df.true_inside] if len(wires_df) else wires_df
     return {"summary": {k: (round(float(v), 4) if isinstance(v, (float, np.floating)) else v)
                         for k, v in summary.items()},
-            "segmentation": seg, "wires": wires_df, "complete": comp, "per_image": dist}
+            "segmentation": seg, "wires": wires_df, "complete": comp_all, "per_image": per_image}
 
 
 def evaluate_real(model, images: list[np.ndarray], masks: list[np.ndarray], names: list[str],

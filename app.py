@@ -52,9 +52,8 @@ def sidebar() -> str:
         else:
             st.info("No trained network yet – see step 3.")
         slot = common.trainer_slot()
-        if slot["monitor"] is not None and slot["monitor"].status == "running":
-            s = slot["monitor"].snapshot()
-            st.markdown(f"**Training running** · epoch {s['epoch']}/{s['total_epochs']}")
+        if slot["process"] is not None and slot["process"].poll() is None:
+            st.markdown("⏳ **Training running** – progress in step 3")
         st.markdown("---")
         st.caption("All data stay on this computer. No telemetry.")
     return page

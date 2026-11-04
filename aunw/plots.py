@@ -187,8 +187,10 @@ def training_curves(history: list[dict] | pd.DataFrame) -> Figure:
         ax.legend(frameon=False, fontsize=8)
     ax = axes[5]
     _style(ax, "Epoch", "", "Learning rate")
-    if "lr" in h:
-        ax.semilogy(h["epoch"], h["lr"], color=BLUE, lw=2)
+    if "lr" in h and len(h):
+        ax.plot(h["epoch"], h["lr"], color=BLUE, lw=2, marker="o", ms=3)
+        ax.set_yscale("log")
+        ax.set_ylim(h["lr"].min() / 3, h["lr"].max() * 3)   # log autoscale fails for constant LR
     return fig
 
 

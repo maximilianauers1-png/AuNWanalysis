@@ -32,28 +32,31 @@ def _synthetic(model) -> None:
     m[1].metric("Centre-line Dice", f"{s['centerline_dice']:.3f}")
     m[2].metric("Orientation error", f"{s['angle_error_deg']:.1f}°")
     m[3].metric("Crossings resolved", f"{s['crossing_resolution'] * 100:.0f} %")
-    m = st.columns(4)
-    m[0].metric("Length: median error", f"{s['length_median_rel_error_%']:+.1f} %",
-                help="Complete wires matched to ground truth")
-    m[1].metric("Length: within ±10 %", f"{s['length_within_10%_fraction'] * 100:.0f} %")
-    m[2].metric("Width: median error", f"{s['width_median_rel_error_%']:+.1f} %")
-    m[3].metric("Width: within ±10 %", f"{s['width_within_10%_fraction'] * 100:.0f} %")
-    st.caption(f"Population level (all wires pooled): length bias mean "
-               f"{s.get('population_mean_length_bias_%', float('nan')):+.1f} % / median "
-               f"{s.get('population_median_length_bias_%', float('nan')):+.1f} %, width bias mean "
-               f"{s.get('population_mean_width_bias_%', float('nan')):+.1f} % / median "
-               f"{s.get('population_median_width_bias_%', float('nan')):+.1f} %. In very dense meshes complete "
-               "wires under-represent long wires (long wires cross more often and are more "
-               "likely to lose an end in a crossing) – keep this in mind when comparing samples "
-               "of very different density.")
+    st.markdown("**Measurement accuracy** – all images vs. images with coverage ≤ "
+                f"{st.session_state['analysis_cfg'].coverage_reliable:.0%} (*reliable* regime)")
+    rows = []
+    for key in ("complete matched wires", "length median rel. error %", "length within 10 % fraction",
+                "width median rel. error %", "width within 10 % fraction",
+                "per-image |median length bias| %", "per-image |stereological mean length bias| %",
+                "per-image |median width bias| %"):
+        rows.append({"quantity": key, "all images": s.get(f"all: {key}"),
+                     "reliable coverage": s.get(f"reliable: {key}")})
+    st.dataframe(rows, hide_index=True)
+    st.caption("Per-wire errors use wires matched to the ground truth. Per-image biases compare "
+               "the statistics a user would report for one image with the truth. At high areal "
+               "coverage most wire ends are hidden under other wires – the length of such meshes "
+               "cannot be measured reliably by any method, the width still can.")
     c = st.columns(2)
     comp, wires = ev["complete"], ev["wires"]
     with c[0]:
-        common.show_figure(parity_plot(comp.true_length, comp.length, "Length"), "parity_length")
+        common.show_figure(parity_plot(comp.true_length, comp.length, "Length"), "parity_length",
+                           width="stretch")
     with c[1]:
-        common.show_figure(parity_plot(wires.true_width, wires.width, "Width"), "parity_width")
+        common.show_figure(parity_plot(wires.true_width, wires.width, "Width"), "parity_width",
+                           width="stretch")
     with st.expander("Per-image details"):
-        st.dataframe(ev["segmentation"].merge(ev["per_image"], on="image"), hide_index=True)
+        st.dataframe(ev["segmentation"].merge(ev["per_image"], on="image").sort_values("coverage"),
+                     hide_index=True)
 
 
 def _real_masks(model) -> None:

@@ -51,7 +51,7 @@ This hybrid design keeps the parts that need learning (appearance, noise, overla
 
 \paragraph{Why train on synthetic data?} Pixel-accurate labels of hundreds of overlapping wires per image are practically impossible to obtain by hand. A renderer that knows the geometry produces unlimited images with \emph{exact} labels, including the true length and width of every wire. That makes it possible to validate the complete measurement chain quantitatively (Section~\ref{sec:validation}). The gap between synthetic and real images is closed by (a) domain randomisation and (b) optional fine-tuning on a few annotated real images (Section~\ref{sec:finetune}).
 
-\paragraph{Software architecture.} The package \code{aunw/} contains the science, with no GUI code; \code{ui/} contains the Streamlit interface. The GUI follows the workflow as numbered steps in a blue navigation column, with the operations of the selected step in the main area. This mirrors the ``wizard + workspace'' pattern of professional image-analysis software. Table~\ref{tab:modules} gives the mapping.
+\paragraph{Software architecture.} The package \code{aunw/} contains the science, with no GUI code; \code{ui/} contains the Streamlit interface. The GUI follows the workflow as numbered steps in a blue navigation column, with the operations of the selected step in the main area (screenshots at the end of this document). This mirrors the ``wizard + workspace'' pattern of professional image-analysis software. Table~\ref{tab:modules} gives the mapping.
 
 \begin{table}[H]\centering\small
 \caption{Modules and the workflow step that exposes them in the GUI.}\label{tab:modules}
@@ -212,6 +212,8 @@ Over-fitting means that the training loss keeps decreasing while the loss on uns
 \item \textbf{Data augmentation} (Section~\ref{sec:targets}) and the practically unlimited synthetic data.
 \end{enumerate}
 
+\paragraph{Training as a separate process.} The GUI does not train inside its own process. It launches the same command a user could type (\code{python -m aunw.cli train \dots}) as a separate process, which writes its progress to \code{progress.json} and \code{preview.npz} in the model folder; the GUI only reads these files. A stop request is a file \code{STOP}, which the trainer checks after every batch, keeping the best weights. This design means that a crash in the numerical libraries can never take down the user interface (an early threaded version did exactly that inside the web server). It also means that training continues when the browser is closed, and that every GUI run is reproducible from the command shown on screen.
+
 \paragraph{Monitoring.} The GUI (step 3) and TensorBoard show the per-batch loss, all per-epoch metrics for training and validation, the learning rate, and predictions on fixed validation tiles after every epoch. In addition, \code{overfitting\_report} computes the generalisation gap
 \begin{equation}
 \Delta_t=\mathcal L_{\text{val}}(t)-\mathcal L_{\text{train}}(t)
@@ -266,6 +268,8 @@ For every branch end inside junction $j$ we compute an outward unit vector $\mat
 \end{align}
 The tolerance grows with the gap because a direction error $\epsilon$ produces a lateral offset $\approx\epsilon|\mathbf r|$. Candidates are accepted greedily in order of increasing cost $c_{ab}=\delta_{ab}/\delta_{\max}+\ell_{ab}/\tau$, with every end used at most once and no cycles. Accepted pairs are merged with a union--find structure; each resulting set of branches is one wire. The tolerance model was not guessed. It was chosen from logged statistics of true and false pairs on ground-truth maps: true continuations have a median lateral offset of 0.9\,px, false pairs 9\,px, and the fixed 2-px tolerance used initially rejected 22\,\% of true pairs.
 
+\paragraph{Gap bridging.} Where two wires cross, the centre-line of the \emph{lower} wire can be interrupted, because the upper wire hides it. Its skeleton then ends in two facing free tips instead of a junction. Two free tips are therefore also linked when they are at most $2.5w+3$\,px apart (candidates from a $k$-d tree), satisfy the same deflection and collinearity criteria, point towards each other ($\mathbf u_a\cdot\mathbf r>0$), and the straight segment between them lies entirely inside the wire mask ($\min p_m>\tfrac12$ along it), i.e.\ the wire visibly continues underneath.
+
 \subsection{End classification and the ``complete'' flag}
 Every unpaired end is classified as a \emph{tip} (a free end not at the border), a \emph{T-end} (the only unpaired end in its junction: all other arms continue, so the wire ends on top of another wire), \emph{unresolved} (unpaired in a junction with other unpaired ends), or \emph{border}. A wire is \textbf{complete} if both ends are tips and it does not touch the border. Only then is its length fully observed. On ground truth, complete wires had a gross length error ($<-10\,\%$) in only $0.5\,\%$ of cases, against 26\,\% for wires with one T-end and 62\,\% with two. Length statistics therefore use complete wires; width statistics use all wires, because truncation does not affect width.
 
@@ -303,6 +307,14 @@ For a sample $x_1,\dots,x_n$ the software reports the mean $\bar x$, the standar
 \end{equation}
 Long wires are therefore under-represented among complete wires. Weighting each complete wire by $1/\pi_i$ (Horvitz--Thompson/Hájek estimator, $\bar x_w=\sum w_ix_i/\sum w_i$) removes this bias~\cite{miles1978,lantuejoul1980}. The weighted standard error uses the Kish effective sample size $n_{\text{eff}}=(\sum w_i)^2/\sum w_i^2$.
 
+\paragraph{Stereological mean length.} An independent estimate of the mean length needs no wire separation at all. Consider a stationary random system of wires with number density $\lambda$ (wires per area) and mean length $\langle L\rangle$. A window of area $A$ contains on average $2\lambda A$ wire ends and a total wire length of $\lambda A\langle L\rangle$, irrespective of how many wires are cut by the frame. Hence
+\begin{equation}
+\widehat{\langle L\rangle}=\frac{2\,\Lambda}{N_{\text{ends}}},
+\end{equation}
+with $\Lambda$ the total measured wire length in the window and $N_{\text{ends}}$ the number of visible ends (free tips and T-ends; ends caused by unresolved crossings and border ends are excluded). The estimator is insensitive to pairing errors, because splitting a wire changes neither $\Lambda$ nor the number of true ends. It is reported per image next to the mean of the complete wires; agreement of the two is a practical consistency check.
+
+\paragraph{Reliability classes by areal coverage.} The fraction $\phi$ of the image covered by wires determines how many wire ends are hidden under other wires. Each image is classified as \emph{good} ($\phi\le0.30$), \emph{caution} ($0.30<\phi\le0.45$) or \emph{length unreliable} ($\phi>0.45$). Width statistics stay reliable in all classes (Section~\ref{sec:validation}).
+
 \paragraph{Comparing populations.} To compare automatic and manual measurements, or two samples, the software reports the two-sample Kolmogorov--Smirnov test $D=\sup_x|F_1(x)-F_2(x)|$ (shape), the Mann--Whitney $U$ test (location, non-parametric) and Welch's $t$ test (means, unequal variances), together with the relative differences of means and medians.
 
 %==========================================================================
@@ -321,14 +333,49 @@ Single straight wire, four angles (unit test) & length $<3\,\%$, width $<5\,\%$\
 \end{tabular}
 \end{table}
 
-\paragraph{(2) The complete chain with the trained network.} %RESULTS%
+\paragraph{(2) The complete chain with the trained network.} The network shipped with the software (\code{models/cpu\_starter\_f16}: 16 base filters, 2.1\,M parameters) was trained on 1600 synthetic tiles for 35 epochs on 4 CPU cores (about 2\,h). Training and validation loss decreased together (Fig.~\ref{fig:curves}): there was no over-fitting, and the best validation loss was reached in the last epoch. A longer run on a GPU, or the larger default network (24 filters), can therefore be expected to improve the results further.
 
-\paragraph{Known limitation: selection bias in very dense meshes.} A wire is complete only if all its crossings were resolved. With per-crossing success probability $p$ and $k$ crossings, $P(\text{complete})\propto p^{k}$, and $k$ grows with length. In very dense meshes (hundreds of wires per $768^2$ image) the complete wires therefore under-represent long wires. In the ground-truth test the true mean length of the complete wires was 14\,\% below that of all wires, while their \emph{measurement} was accurate. The GUI reports the fraction of resolved crossings per image as a quality index. Compare samples of very different density with care, or check the bias for your density with the synthetic validation in step 4.
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{figures/training_curves.pdf}
+\caption{Training of the shipped network: training (blue) and validation (orange) curves. The validation loss follows the training loss closely, so there is no generalisation gap.}\label{fig:curves}
+\end{figure}
+
+The complete pipeline (tiling, TTA, wire separation, measurement) was evaluated on two independent sets of full-size $768^2$ test images. Set A has the full density range of the training generator (coverage 7--80\,\%); set B has realistic moderate densities (coverage 4--44\,\%).
+
+\begin{table}[H]\centering\small
+\caption{Accuracy of the complete chain. Per-wire errors refer to wires matched to the ground truth; length errors to \emph{complete} wires. Per-image biases compare the statistics a user would report for one image with the truth (median over images of the absolute bias).}\label{tab:results}
+\begin{tabular}{@{}lccc@{}}\toprule
+ & A: all & A: coverage $\le30\,\%$ & B: moderate \\\midrule
+Images & 12 & 5 & 16 \\
+Mask Dice / IoU & 0.985 / 0.970 & -- & 0.982 / 0.966\\
+Centre-line Dice & 0.859 & -- & 0.924 \\
+Orientation error & $2.7^\circ$ & -- & $1.8^\circ$ \\
+Crossings resolved & 82\,\% & -- & 93\,\% \\\midrule
+Length: median rel.\ error (per wire) & $+0.07\,\%$ & $+0.24\,\%$ & $+0.37\,\%$\\
+Length: within $\pm10\,\%$ & 85\,\% & 92\,\% & 92\,\% \\
+Width: median rel.\ error (per wire) & $-0.46\,\%$ & $-0.29\,\%$ & $-0.70\,\%$\\
+Width: within $\pm10\,\%$ & 77\,\% & 86\,\% & 92\,\% \\\midrule
+Per image: $|$bias$|$ of median length & 20\,\% & 9.0\,\% & 4.4\,\% \\
+Per image: $|$bias$|$ of stereological $\langle L\rangle$ & 29\,\% & 9.1\,\% & 10\,\% \\
+Per image: $|$bias$|$ of median width & 2.5\,\% & 3.3\,\% & 1.2\,\% \\\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{figure}[H]\centering
+\includegraphics[width=0.45\linewidth]{figures/parity_length.pdf}\hfill
+\includegraphics[width=0.45\linewidth]{figures/parity_width.pdf}
+\caption{Measured vs.\ true length (complete wires) and width (all matched wires) on test set B.}\label{fig:parity}
+\end{figure}
+
+\paragraph{Interpretation.} Individual wires are measured essentially without bias: median errors are below 1\,\% for both length and width. At moderate density, the per-image deviations of the median length (typically 4\,\%, at most 14\,\%) are consistent with pure sampling noise. With $n\approx20$ complete wires from a log-normal population with $\sigma\approx0.45$, the standard error of the median is $\approx1.25\,\sigma/\sqrt n\approx12\,\%$. This is why the software always reports bootstrap confidence intervals, and why several images per sample should be analysed.
+
+\paragraph{The physical limit: dense meshes.} Above roughly 40\,\% areal coverage most wire ends lie underneath other wires and cannot be observed, by this software or by a human. Complete wires then become rare (fewer than 35 in a $768^2$ image) and preferentially short, because a long wire crosses more wires and is more likely to lose an end ($P(\text{complete})\propto p^{k}$ for $k$ crossings resolved with probability $p$). The stereological estimator also degrades, because hidden ends are not counted. The width remains reliable at all densities (per-image bias $\le5\,\%$ up to 80\,\% coverage). The software therefore reports the coverage and a reliability class for every image (Section~\ref{sec:stats}). For length measurements on dense meshes, image regions of lower density or higher magnification should be used.
 
 \paragraph{Design alternatives that were tested and rejected.} Reporting these is part of good scientific practice:
 \begin{itemize}[leftmargin=*,itemsep=1pt]
 \item \emph{Junction contraction} (merging junctions joined by short branches, intended for shallow-angle crossings) reduced the fraction of wires within $\pm10\,\%$ from 71\,\% to 60\,\% and was removed.
 \item \emph{Counting T-ends as complete} raised the number of usable wires but admitted 26--62\,\% fragments.
+\item \emph{Gap bridging} (Section~\ref{sec:graph}) was kept although its measurable gain on the test sets was small (crossings resolved 79\,\%$\to$82\,\%); the dominant length bias in dense meshes is the physical selection effect above, not interrupted centre-lines.
 \item \emph{Horvitz--Thompson weights $p^{-k}$} for the survivorship bias, with $p$ estimated per image (globally or per junction degree), over-corrected the mean by $+36$ to $+57\,\%$ because $p$ is strongly heterogeneous, and was not adopted.
 \end{itemize}
 
@@ -354,9 +401,23 @@ Install with \code{pip install -r requirements.txt} and start with \code{streaml
 \item[Step 6] Run the analysis. The overlay colours complete wires blue, wires ending in a crossing orange, and wires cut by the border grey. Tabs show the raw network output and the table of all wires.
 \item[Step 7] Choose the unit and the edge correction. The page shows the summary table, histograms with normal and log-normal fits, length vs.\ width, per-image box plots and CDFs. Downloads: CSV, Excel (sheets \emph{Summary}, \emph{Wires}, \emph{Per image}, \emph{Settings}), each figure as PNG (300\,dpi), SVG or PDF, and a ZIP of everything, including overlays and the exact analysis settings for reproducibility.
 \end{description}
-Headless use, for example training on a GPU server, is possible with \code{python -m aunw.cli generate|train|evaluate|analyze}. All processing is local: the server listens only on \code{localhost} and usage statistics are disabled.
+Headless use, for example training on a GPU server, is possible with \code{python -m aunw.cli} and the sub-commands \code{generate}, \code{train}, \code{finetune}, \code{evaluate} and \code{analyze}. All processing is local: the server listens only on \code{localhost} and usage statistics are disabled.
 
-%SCREENSHOTS%
+\subsection*{Screenshots}
+\begin{figure}[H]\centering
+\includegraphics[width=0.49\linewidth]{figures/ui_overview.jpg}\hfill
+\includegraphics[width=0.49\linewidth]{figures/ui_synthetic.jpg}\\[4pt]
+\includegraphics[width=0.49\linewidth]{figures/ui_network.jpg}\hfill
+\includegraphics[width=0.49\linewidth]{figures/ui_training.jpg}
+\caption{Overview, synthetic data generator (step 1), network architecture (step 2) and live training monitor (step 3, shown here for a deliberately tiny training set, so the over-fitting gap is visible).}
+\end{figure}
+\begin{figure}[H]\centering
+\includegraphics[width=0.49\linewidth]{figures/ui_load.jpg}\hfill
+\includegraphics[width=0.49\linewidth]{figures/ui_analyse.jpg}\\[4pt]
+\includegraphics[width=0.49\linewidth]{figures/ui_results.jpg}
+\caption{Loading and calibrating images (step 5), analysis with overlay, coverage-based reliability check and the two mean-length estimates (step 6), and results with fitted distributions and exports (step 7).}
+\end{figure}
+
 
 %==========================================================================
 \section{Proposed additional features (for discussion)}

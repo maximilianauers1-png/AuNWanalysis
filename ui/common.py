@@ -121,8 +121,8 @@ def dataset_ready(data_dir: str | None = None) -> bool:
 
 @st.cache_resource
 def trainer_slot() -> dict:
-    """One training job per server process; survives page changes and reruns."""
-    return {"monitor": None, "thread": None}
+    """The training process started from this GUI (survives page changes and reruns)."""
+    return {"process": None, "model_dir": "", "command": ""}
 
 
 def workflow_status() -> dict[str, bool]:

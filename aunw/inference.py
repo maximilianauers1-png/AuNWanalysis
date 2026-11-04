@@ -148,4 +148,5 @@ def analyze_image(model: keras.Model, sem: SEMImage, cfg: AnalysisConfig,
         df.insert(0, "image", sem.name)
     paths = [[p / scale for p in w["path"]] for w in wires]
     info["paths"] = paths
+    info["stereological_mean_length_px"] = info.get("stereological_mean_length_px", np.nan) / scale
     return ImageResult(sem.name, df, maps, scale, sem.nm_per_px, sem.shape, info)

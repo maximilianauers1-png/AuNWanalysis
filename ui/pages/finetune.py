@@ -6,13 +6,13 @@ import numpy as np
 import streamlit as st
 from PIL import Image
 
-from aunw.config import MODELS_DIR, TrainConfig
-from aunw.dataset import load_split, tiles_from_annotations
+from aunw.config import MODELS_DIR
+from aunw.dataset import tiles_from_annotations
 from aunw.inference import estimate_scale, resize_image
 from aunw.io import load_image
-from aunw.training import TrainingMonitor, finetune, model_file, run_in_background
+from aunw.training import model_file
 from ui import common
-from ui.pages.training import monitor_panel
+from ui.pages.training import is_running, launch, monitor_panel
 
 
 def render() -> None:
@@ -54,9 +54,7 @@ def render() -> None:
     name = st.text_input("Name of the fine-tuned model",
                          f"{Path(st.session_state['model_dir']).name}_ft_{datetime.now():%Y%m%d_%H%M}")
 
-    slot = common.trainer_slot()
-    running = slot["monitor"] is not None and slot["monitor"].status == "running"
-    if st.button("▶ Fine-tune", type="primary", disabled=running):
+    if st.button("▶ Fine-tune", type="primary", disabled=is_running()):
         cfg = st.session_state["analysis_cfg"]
         imgs, masks = [], []
         with st.spinner("Preparing tiles at network scale …"):
@@ -67,17 +65,25 @@ def render() -> None:
                 imgs.append(resize_image(img, s))
                 masks.append(resize_image(mask, s) > 0.5)
             k = len(pairs) - int(n_val)
-            real_train = tiles_from_annotations(imgs[:k], masks[:k])
-            real_val = tiles_from_annotations(imgs[k:], masks[k:])
-            synth = load_split(Path(st.session_state["data_dir"]) / "train.npz")
-        tcfg = TrainConfig(epochs=int(epochs), learning_rate=lr, batch_size=8, early_stop_patience=6)
-        mon = TrainingMonitor()
-        slot["monitor"] = mon
-        slot["thread"] = run_in_background(
-            finetune, mon, base_model=model_file(Path(st.session_state["model_dir"])),
-            model_dir=MODELS_DIR / name, real_train=real_train, real_val=real_val, synthetic=synth,
-            train_cfg=tcfg, freeze_encoder=freeze, real_fraction=real_frac)
-        st.session_state["model_dir"] = str(MODELS_DIR / name)
+            try:
+                real_train = tiles_from_annotations(imgs[:k], masks[:k])
+                real_val = tiles_from_annotations(imgs[k:], masks[k:])
+            except ValueError as exc:
+                st.error(str(exc))
+                return
+        out = MODELS_DIR / name
+        out.mkdir(parents=True, exist_ok=True)
+        np.savez_compressed(out / "real_tiles.npz", **{f"train_{k}": v for k, v in real_train.items()},
+                            **{f"val_{k}": v for k, v in real_val.items()})
+        args = ["finetune", "--base", str(model_file(Path(st.session_state["model_dir"]))),
+                "--out", str(out), "--real", str(out / "real_tiles.npz"),
+                "--synthetic", str(Path(st.session_state["data_dir"]) / "train.npz"),
+                "--epochs", str(int(epochs)), "--lr", str(lr), "--real-fraction", str(real_frac)]
+        args += [] if freeze else ["--no-freeze"]
+        launch(args, out)
+        st.session_state["model_dir"] = str(out)
         st.toast(f"Fine-tuning started: {len(real_train['image'])} real training tiles, "
                  f"{len(real_val['image'])} validation tiles")
+    st.caption("Note: real annotations carry no orientation label, so the validation angle error "
+               "is not defined for them and is shown as 0.")
     monitor_panel()

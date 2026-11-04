@@ -13,92 +13,129 @@ Over-fitting countermeasures used here (and why)
       tiles mixed with synthetic ones, so a handful of annotated images cannot
       be memorised and old knowledge is not forgotten.
 
-The `TrainingMonitor` is a thread-safe record of the training run. The GUI
-reads it while training runs in a background thread, so the interface stays
-responsive and the run survives page changes. TensorBoard logs are written as
-well (`tensorboard --logdir models`).
+The `TrainingMonitor` records the run in <model_dir>/progress.json. The GUI
+starts training as a separate process (`start_process`) and follows that file,
+so the interface stays responsive and the run survives page changes or a
+closed browser. TensorBoard logs are written as well (`tensorboard --logdir models`).
 """
 from __future__ import annotations
 
 import importlib.util
-import threading
+import json
+import subprocess
+import sys
 import time
-import traceback
-from dataclasses import dataclass, field
 from pathlib import Path
 
 import keras
 import numpy as np
 import pandas as pd
 
-from .config import ModelConfig, TrainConfig, save_json
+from .config import ROOT, ModelConfig, TrainConfig, save_json
 from .dataset import load_split, make_dataset, mixed_dataset
 from .model import build_unet, compile_model, enable_mixed_precision, load_model
 
 
-@dataclass
 class TrainingMonitor:
-    status: str = "idle"                 # idle | running | finished | stopped | error
-    message: str = ""
-    epoch: int = 0
-    total_epochs: int = 0
-    step: int = 0
-    steps_per_epoch: int = 0
-    history: list[dict] = field(default_factory=list)     # one dict per epoch
-    batch_loss: list[float] = field(default_factory=list)
-    preview: dict = field(default_factory=dict)            # latest validation predictions
-    started: float = 0.0
-    model_dir: str = ""
-    stop_event: threading.Event = field(default_factory=threading.Event)
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    """Progress record of one training run.
 
-    def snapshot(self) -> dict:
-        with self.lock:
-            return {"status": self.status, "message": self.message, "epoch": self.epoch,
-                    "total_epochs": self.total_epochs, "step": self.step,
-                    "steps_per_epoch": self.steps_per_epoch, "history": list(self.history),
-                    "batch_loss": list(self.batch_loss[-2000:]), "preview": dict(self.preview),
-                    "elapsed": time.time() - self.started if self.started else 0.0,
-                    "model_dir": self.model_dir}
+    It is persisted to <model_dir>/progress.json (+ preview.npz) so that any
+    other process - the GUI - can follow the run. Training is therefore run as
+    a separate process (see `start_process`): a crash or a long computation in
+    the trainer can never freeze or kill the user interface, and the run
+    continues even if the browser is closed. A stop is requested by creating
+    the file <model_dir>/STOP.
+    """
+
+    FIELDS = ("status", "message", "epoch", "total_epochs", "step", "steps_per_epoch",
+              "history", "batch_loss", "started")
+
+    def __init__(self, model_dir: Path | str | None = None):
+        self.model_dir = Path(model_dir) if model_dir else None
+        self.status, self.message = "idle", ""                 # idle|running|finished|stopped|error
+        self.epoch = self.total_epochs = self.step = self.steps_per_epoch = 0
+        self.history: list[dict] = []                           # one dict per epoch
+        self.batch_loss: list[float] = []
+        self.started = 0.0
+        self.preview: dict = {}
+        self._last_save = 0.0
+
+    # ---- writing (trainer side)
+    def update(self, force: bool = False, **values) -> None:
+        for k, v in values.items():
+            setattr(self, k, v)
+        if self.model_dir and (force or time.time() - self._last_save > 1.0):
+            self._last_save = time.time()
+            data = {k: getattr(self, k) for k in self.FIELDS}
+            data["batch_loss"] = data["batch_loss"][-2000:]
+            tmp = self.model_dir / "progress.json.tmp"
+            tmp.write_text(json.dumps(data))
+            tmp.replace(self.model_dir / "progress.json")      # atomic: readers never see half a file
+
+    def set_preview(self, preview: dict) -> None:
+        self.preview = preview
+        if self.model_dir:
+            with open(self.model_dir / "preview.npz.tmp", "wb") as f:
+                np.savez_compressed(f, **preview)
+            (self.model_dir / "preview.npz.tmp").replace(self.model_dir / "preview.npz")
+
+    def stop_requested(self) -> bool:
+        return bool(self.model_dir and (self.model_dir / "STOP").exists())
+
+    # ---- reading (GUI side)
+    @staticmethod
+    def load(model_dir: Path | str) -> dict | None:
+        model_dir = Path(model_dir)
+        try:
+            data = json.loads((model_dir / "progress.json").read_text())
+        except (OSError, json.JSONDecodeError):
+            return None
+        data["elapsed"] = time.time() - data["started"] if data.get("started") else 0.0
+        data["preview"] = {}
+        if (model_dir / "preview.npz").exists():
+            try:
+                with np.load(model_dir / "preview.npz") as f:
+                    data["preview"] = {k: f[k] for k in f.files}
+            except (OSError, ValueError):
+                pass
+        return data
 
 
 class MonitorCallback(keras.callbacks.Callback):
-    """Pushes progress into a TrainingMonitor and honours stop requests."""
+    """Pushes progress into a TrainingMonitor, prints one line per epoch, honours STOP."""
 
-    def __init__(self, monitor: TrainingMonitor, preview_x: np.ndarray, preview_y: dict,
-                 preview_every: int = 1):
+    def __init__(self, monitor: TrainingMonitor, preview_x: np.ndarray, preview_y: dict):
         super().__init__()
-        self.mon, self.px, self.py, self.every = monitor, preview_x, preview_y, preview_every
+        self.mon, self.px, self.py = monitor, preview_x, preview_y
         self.t0 = 0.0
 
     def on_epoch_begin(self, epoch, logs=None):
         self.t0 = time.time()
-        with self.mon.lock:
-            self.mon.epoch, self.mon.step = epoch + 1, 0
+        self.mon.update(epoch=epoch + 1, step=0)
 
     def on_train_batch_end(self, batch, logs=None):
-        with self.mon.lock:
-            self.mon.step = batch + 1
-            self.mon.batch_loss.append(float(logs["loss"]))
-        if self.mon.stop_event.is_set():
+        self.mon.batch_loss.append(float(logs["loss"]))
+        self.mon.update(step=batch + 1)
+        if self.mon.stop_requested():
             self.model.stop_training = True
 
     def on_epoch_end(self, epoch, logs=None):
         lr = float(keras.ops.convert_to_numpy(self.model.optimizer.learning_rate))
         row = {"epoch": epoch + 1, "lr": lr, "seconds": time.time() - self.t0,
                **{k: float(v) for k, v in (logs or {}).items() if k != "learning_rate"}}
-        preview = {}
-        if (epoch + 1) % self.every == 0:
-            out = self.model.predict_on_batch(self.px)
-            preview = {"image": self.px[..., 0], "mask_true": self.py["mask"][..., 0],
-                       "mask_pred": np.asarray(out["mask"])[..., 0],
-                       "centerline_true": self.py["centerline"][..., 0],
-                       "centerline_pred": np.asarray(out["centerline"])[..., 0],
-                       "epoch": epoch + 1}
-        with self.mon.lock:
-            self.mon.history.append(row)
-            if preview:
-                self.mon.preview = preview
+        out = self.model.predict_on_batch(self.px)
+        self.mon.set_preview({"image": self.px[..., 0], "mask_true": self.py["mask"][..., 0],
+                              "mask_pred": np.asarray(out["mask"])[..., 0],
+                              "centerline_true": self.py["centerline"][..., 0],
+                              "centerline_pred": np.asarray(out["centerline"])[..., 0],
+                              "epoch": np.array(epoch + 1)})
+        self.mon.history.append(row)
+        self.mon.update(force=True)
+        print(f"epoch {row['epoch']:3d}  loss {row['loss']:.4f}  val_loss {row.get('val_loss', np.nan):.4f}  "
+              f"mask dice {row.get('val_mask_dice_coef', np.nan):.3f}  "
+              f"cl dice {row.get('val_centerline_dice_coef', np.nan):.3f}  "
+              f"angle err {row.get('val_orientation_angle_error_deg', np.nan):.1f} deg  "
+              f"lr {lr:.1e}  {row['seconds']:.0f}s", flush=True)
 
 
 def _preview_batch(val: dict, n: int = 3):
@@ -128,9 +165,8 @@ def _finish(model: keras.Model, model_dir: Path, monitor: TrainingMonitor | None
     model.save(model_dir / "model.keras")
     save_json(model_dir / "config.json", **configs)
     if monitor is not None:
-        with monitor.lock:
-            monitor.status = "stopped" if monitor.stop_event.is_set() else "finished"
-            monitor.message = f"Model saved to {model_dir}"
+        monitor.update(force=True, status="stopped" if monitor.stop_requested() else "finished",
+                       message=f"Model saved to {model_dir}")
 
 
 # --------------------------------------------------------------------------- training
@@ -149,14 +185,12 @@ def train(model_dir: Path, data_dir: Path, model_cfg: ModelConfig, train_cfg: Tr
     model = load_model(init_from) if init_from else build_unet(model_cfg)
     compile_model(model, train_cfg)
     if monitor is not None:
-        with monitor.lock:
-            monitor.status, monitor.started = "running", time.time()
-            monitor.total_epochs = train_cfg.epochs
-            monitor.steps_per_epoch = len(train_arr["image"]) // train_cfg.batch_size
-            monitor.model_dir = str(model_dir)
+        monitor.update(force=True, status="running", started=time.time(),
+                       total_epochs=train_cfg.epochs,
+                       steps_per_epoch=len(train_arr["image"]) // train_cfg.batch_size)
     model.fit(train_ds, validation_data=val_ds, epochs=train_cfg.epochs, verbose=0,
               callbacks=_callbacks(model_dir, train_cfg, monitor, val_arr))
-    _finish(model, model_dir, monitor, model=model_cfg, train=train_cfg, data_dir=str(data_dir),
+    _finish(model, model_dir, monitor, model_config=model_cfg, train=train_cfg, data_dir=str(data_dir),
             kind="synthetic")
     return model
 
@@ -184,10 +218,8 @@ def finetune(base_model: Path, model_dir: Path, real_train: dict, real_val: dict
     train_ds = mixed_dataset(real_train, synthetic, train_cfg.batch_size, real_fraction, train_cfg.seed)
     val_ds = make_dataset(real_val, train_cfg.batch_size, False)
     if monitor is not None:
-        with monitor.lock:
-            monitor.status, monitor.started = "running", time.time()
-            monitor.total_epochs, monitor.steps_per_epoch = train_cfg.epochs, steps
-            monitor.model_dir = str(model_dir)
+        monitor.update(force=True, status="running", started=time.time(),
+                       total_epochs=train_cfg.epochs, steps_per_epoch=steps)
     model.fit(train_ds, validation_data=val_ds, epochs=train_cfg.epochs, steps_per_epoch=steps,
               verbose=0, callbacks=_callbacks(model_dir, train_cfg, monitor, real_val))
     _finish(model, model_dir, monitor, train=train_cfg, base_model=str(base_model),
@@ -195,19 +227,24 @@ def finetune(base_model: Path, model_dir: Path, real_train: dict, real_val: dict
     return model
 
 
-def run_in_background(fn, monitor: TrainingMonitor, **kwargs) -> threading.Thread:
-    """Run train()/finetune() in a daemon thread; errors are reported via the monitor."""
-    def target():
-        try:
-            fn(monitor=monitor, **kwargs)
-        except Exception as exc:                             # surfaced in the GUI
-            with monitor.lock:
-                monitor.status = "error"
-                monitor.message = f"{exc}\n{traceback.format_exc()}"
+def start_process(args: list[str], model_dir: Path) -> subprocess.Popen:
+    """Launch `python -m aunw.cli <args>` as a separate process, logging to model_dir/train.log.
 
-    thread = threading.Thread(target=target, daemon=True, name="aunw-training")
-    thread.start()
-    return thread
+    This is exactly the command a user could type in a terminal; the GUI only
+    starts it and then follows progress.json.
+    """
+    model_dir = Path(model_dir)
+    model_dir.mkdir(parents=True, exist_ok=True)
+    (model_dir / "STOP").unlink(missing_ok=True)
+    TrainingMonitor(model_dir).update(force=True, status="starting", message="starting …")
+    log = open(model_dir / "train.log", "w")
+    return subprocess.Popen([sys.executable, "-m", "aunw.cli", *args], stdout=log,
+                            stderr=subprocess.STDOUT, cwd=str(ROOT))
+
+
+def request_stop(model_dir: Path) -> None:
+    """Ask a running trainer to stop after the current batch (best weights are kept)."""
+    (Path(model_dir) / "STOP").touch()
 
 
 # --------------------------------------------------------------------------- diagnostics

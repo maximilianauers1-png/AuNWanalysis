@@ -67,10 +67,29 @@ def render() -> None:
     m[1].metric("Complete wires", int(df["complete"].sum()) if len(df) else 0,
                 help="Both tips visible → length fully observed")
     m[2].metric("Crossings resolved", f"{r.info.get('crossing_resolution', float('nan')) * 100:.0f} %")
-    m[3].metric("Analysis scale", f"{r.scale:.2f}×")
+    m[3].metric("Areal coverage", f"{r.info.get('coverage', float('nan')) * 100:.0f} %",
+                help="Fraction of the image covered by wires.")
     unit = "nm" if r.nm_per_px else "px"
     if len(df):
         m[4].metric(f"Median width [{unit}]", f"{df[f'width_{unit}'].median():.3g}")
+    f = r.nm_per_px or 1.0
+    l_complete = df.loc[df["complete"], "length_px"].mean() * f if len(df) else float("nan")
+    l_stereo = r.info.get("stereological_mean_length_px", float("nan")) * f
+    msg = (f"Mean length: {l_complete:.4g} {unit} (complete wires) vs. {l_stereo:.4g} {unit} "
+           f"(stereological, 2·total length / number of ends) · analysis scale {r.scale:.2f}×")
+    rel = r.info.get("reliability", "")
+    if len(df) == 0:
+        st.warning("No wires detected. Check that the right network is active (blue column), "
+                   "that the image shows nanowires, and try the automatic scale or a different "
+                   "target width in the analysis settings.")
+    elif rel == "good":
+        st.success(f"✓ Coverage is moderate – length and width statistics are reliable. {msg}")
+    elif rel == "caution":
+        st.warning(f"⚠️ Dense mesh – some wire ends are hidden; length statistics may be biased "
+                   f"towards short wires. Width is reliable. {msg}")
+    else:
+        st.error(f"✗ Very dense mesh – most wire ends are hidden under other wires; length "
+                 f"statistics are not reliable (width still is). {msg}")
 
     tabs = st.tabs(["Overlay", "Network output", "Wire table"])
     with tabs[0]:

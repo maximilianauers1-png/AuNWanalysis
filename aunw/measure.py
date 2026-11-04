@@ -19,7 +19,9 @@ Pipeline (deterministic, few parameters)
                     lateral     l      = max(|u_a x r|, |u_b x r|)    < tol(|r|)
                     cost               = delta / delta_max + l / tol
                 Pairs are accepted greedily by increasing cost. u comes from the
-                network's orientation head where it is confident.
+                network's orientation head where it is confident. Facing free tips
+                separated by a short gap that lies inside the wire mask are joined
+                the same way (the lower wire at a crossing is hidden).
 5.  Wires.      Union-find over the accepted pairs: connected branches = one wire.
 6.  Length.     Sum of branch lengths (polyline resampled every 4 px, which removes
                 the pixel-staircase bias) + gaps bridged inside junctions + w/2 per
@@ -31,6 +33,9 @@ Pipeline (deterministic, few parameters)
                 (unpaired in an ambiguous junction) or "border". A wire is
                 *complete* if both ends are free tips and it does not touch the
                 border: only then is its length fully observed.
+9.  Reliability. The areal coverage of the mask decides how many wire ends are
+                visible. The stereological estimate <L> = 2 * total length / ends
+                is an independent cross-check of the mean length.
 """
 from __future__ import annotations
 
@@ -241,52 +246,97 @@ def build_graph(prob: np.ndarray, centerline: np.ndarray, cfg: AnalysisConfig) -
     return Graph(branches, jzone, jcentre, j_at_border, skel, w_glob, r_j, edt)
 
 
-def pair_branches(g: Graph, orient: np.ndarray | None, cfg: AnalysisConfig):
-    """Stage 4-5: pair branch ends inside junctions; union-find into wires.
+def _pair_cost(ea, eb, cos_max: float, base_tol: float, max_deg: float) -> float | None:
+    """Cost of joining two branch ends into one straight wire (None = not allowed)."""
+    (ba, _, ua, pa), (bb, _, ub, pb) = ea, eb
+    if ba == bb:
+        return None
+    straightness = -ua @ ub                                 # cos(deflection)
+    r = pb - pa
+    lateral = max(abs(ua[0] * r[1] - ua[1] * r[0]), abs(ub[0] * r[1] - ub[1] * r[0]))
+    tol = base_tol + 0.1 * np.linalg.norm(r)                # direction error grows with the gap
+    if straightness <= cos_max or lateral >= tol:
+        return None
+    return np.degrees(np.arccos(min(straightness, 1.0))) / max_deg + lateral / tol
+
+
+def _greedy_link(cands, parent, linked, gap_len) -> None:
+    """Accept candidate pairs by increasing cost; each end once, no cycles."""
+    for _, (ba, sa, _, pa), (bb, sb, _, pb) in sorted(cands, key=lambda c: c[0]):
+        if (ba, sa) in linked or (bb, sb) in linked or _find(parent, ba) == _find(parent, bb):
+            continue
+        linked |= {(ba, sa), (bb, sb)}
+        parent[_find(parent, ba)] = _find(parent, bb)
+        gap_len[ba] += np.linalg.norm(pb - pa)
+
+
+def _inside_mask(prob: np.ndarray, pa: np.ndarray, pb: np.ndarray) -> bool:
+    """True if the straight segment pa -> pb (x, y) runs entirely inside the wire mask."""
+    n = int(np.ceil(np.linalg.norm(pb - pa))) + 2
+    xs, ys = np.linspace(pa[0], pb[0], n), np.linspace(pa[1], pb[1], n)
+    return bool(ndi.map_coordinates(prob, [ys, xs], order=1).min() > 0.5)
+
+
+def pair_branches(g: Graph, prob: np.ndarray, orient: np.ndarray | None, cfg: AnalysisConfig):
+    """Stages 4-5: link branch ends into wires; union-find over the links.
+
+    (a) Junctions: ends meeting in a junction zone are paired if collinear.
+    (b) Gap bridging: two *free* tips facing each other across a short gap are
+        joined if the gap lies inside the wire mask. This happens where the
+        lower of two crossing wires is hidden: its centre-line is interrupted
+        but the wire mask is continuous.
 
     Returns (parent, linked, gap_len, unpaired_at):
         parent       union-find array over branch indices
         linked       set of (branch, side) ends that were paired
-        gap_len      bridged junction distance booked per branch
+        gap_len      bridged distance booked per branch
         unpaired_at  number of unpaired ends per junction id
     """
     m = max(8, int(round(3.0 * g.width_px)))
     ends_at: dict[int, list] = {}
+    free_tips = []
     for bi, b in enumerate(g.branches):
         for side in (0, 1):
+            tip = b.path[-1] if side else b.path[0]
+            u = end_direction(b.path, bool(side), min(m, len(b.path)), orient)
+            end = (bi, side, u, tip[::-1].astype(float))
             j = b.junction[side]
             if j:
-                tip = b.path[-1] if side else b.path[0]
-                u = end_direction(b.path, bool(side), min(m, len(b.path)), orient)
-                ends_at.setdefault(j, []).append((bi, side, u, tip[::-1].astype(float)))
+                ends_at.setdefault(j, []).append(end)
+            elif not near_border(tip, prob.shape)[0]:
+                free_tips.append(end)
 
     parent = list(range(len(g.branches)))
     linked: set[tuple[int, int]] = set()
     gap_len = np.zeros(len(g.branches))
-    cos_max = np.cos(np.radians(cfg.max_pair_angle_deg))
-    base_tol = max(2.0, 0.5 * g.width_px)
+    args = (np.cos(np.radians(cfg.max_pair_angle_deg)), max(2.0, 0.5 * g.width_px),
+            cfg.max_pair_angle_deg)
 
+    # (a) pairing inside junctions
     for ends in ends_at.values():
         cands = []
         for a in range(len(ends)):
             for b in range(a + 1, len(ends)):
-                (ba, _, ua, pa), (bb, _, ub, pb) = ends[a], ends[b]
-                if ba == bb:
-                    continue
-                straightness = -ua @ ub                     # cos(deflection)
-                r = pb - pa
-                lateral = max(abs(ua[0] * r[1] - ua[1] * r[0]), abs(ub[0] * r[1] - ub[1] * r[0]))
-                tol = base_tol + 0.1 * np.linalg.norm(r)    # direction error grows with the gap
-                if straightness > cos_max and lateral < tol:
-                    deflection = np.degrees(np.arccos(min(straightness, 1.0)))
-                    cands.append((deflection / cfg.max_pair_angle_deg + lateral / tol, a, b))
-        for _, a, b in sorted(cands):
-            (ba, sa, _, pa), (bb, sb, _, pb) = ends[a], ends[b]
-            if (ba, sa) in linked or (bb, sb) in linked or _find(parent, ba) == _find(parent, bb):
+                c = _pair_cost(ends[a], ends[b], *args)
+                if c is not None:
+                    cands.append((c, ends[a], ends[b]))
+        _greedy_link(cands, parent, linked, gap_len)
+
+    # (b) bridging gaps between facing free tips
+    if len(free_tips) > 1:
+        from scipy.spatial import cKDTree
+        pts = np.array([e[3] for e in free_tips])
+        max_gap = 2.5 * g.width_px + 3
+        cands = []
+        for a, b in cKDTree(pts).query_pairs(max_gap):
+            ea, eb = free_tips[a], free_tips[b]
+            r = eb[3] - ea[3]
+            if ea[2] @ r <= 0:                              # tips must face each other
                 continue
-            linked |= {(ba, sa), (bb, sb)}
-            parent[_find(parent, ba)] = _find(parent, bb)
-            gap_len[ba] += np.linalg.norm(pb - pa)
+            c = _pair_cost(ea, eb, *args)
+            if c is not None and _inside_mask(prob, ea[3], eb[3]):
+                cands.append((c, ea, eb))
+        _greedy_link(cands, parent, linked, gap_len)
 
     unpaired_at = np.zeros(len(g.jcentre), int)
     for j, ends in ends_at.items():
@@ -329,9 +379,10 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
     prob = maps["mask"].astype(np.float32)
     g = build_graph(prob, maps["centerline"], cfg)
     if g is None:
-        return [], {"crossing_resolution": np.nan, "width_px_global": np.nan,
+        return [], {"crossing_resolution": np.nan, "width_px_global": np.nan, "coverage": 0.0,
+                    "stereological_mean_length_px": np.nan, "reliability": "no wires",
                     "junctions": np.zeros((0, 2)), "n_junctions": 0}
-    parent, linked, gap_len, unpaired_at = pair_branches(g, maps.get("orientation"), cfg)
+    parent, linked, gap_len, unpaired_at = pair_branches(g, prob, maps.get("orientation"), cfg)
 
     wires_of: dict[int, list[int]] = {}
     for bi in range(len(g.branches)):
@@ -387,7 +438,16 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
     # Quality index: fraction of crossings resolved (a failed pairing leaves ~2 unresolved ends)
     n_links = len(linked) // 2
     n_unres = sum(r["end_unresolved"] for r in results)
+    # Stereological mean length (needs no wire separation): a window contains on average
+    # 2*lambda*A wire ends and lambda*A*<L> wire length, so <L> = 2 * total length / ends.
+    n_ends = sum(r["end_tips"] + r["end_t"] for r in results)
+    total = sum(r["length_px"] for r in results)
+    coverage = float((prob > cfg.mask_threshold).mean())
     info = {"crossing_resolution": n_links / (n_links + 0.5 * n_unres) if n_links else 1.0,
+            "coverage": coverage, "n_ends": n_ends,
+            "stereological_mean_length_px": 2 * total / n_ends if n_ends else np.nan,
+            "reliability": ("good" if coverage <= cfg.coverage_reliable else
+                            "caution" if coverage <= cfg.coverage_limit else "length unreliable"),
             "width_px_global": g.width_px, "junctions": g.jcentre[1:],
             "n_junctions": len(g.jcentre) - 1, "skeleton": g.skeleton}
     return results, info
