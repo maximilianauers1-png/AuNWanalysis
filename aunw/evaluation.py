@@ -39,6 +39,7 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
     """Run the full pipeline on synthetic test images and compare with the truth."""
     cfg = cfg or AnalysisConfig()
     seg_rows, wire_rows, dist_rows = [], [], []
+    pooled = {"true_length": [], "length": [], "true_width": [], "width": []}   # population level
     files = list_test_images(data_dir)[:n_images]
     for k, f in enumerate(files):
         img = cv2.imread(str(f), cv2.IMREAD_GRAYSCALE).astype(np.float32) / 255
@@ -64,6 +65,11 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
                               "complete": w["complete"], "true_inside": bool(g.inside)})
         inside = gt[gt.inside]
         det = pd.DataFrame([{k: v for k, v in w.items() if k != "path"} for w in wires])
+        pooled["true_length"] += inside.length_px.tolist()
+        pooled["true_width"] += gt.width_px.tolist()
+        if len(det):
+            pooled["length"] += det.loc[det.complete, "length_px"].tolist()
+            pooled["width"] += det.width_px.tolist()
         dist_rows.append({"image": f.name, "true_wires_inside": len(inside),
                           "detected": len(det), "complete": int(det["complete"].sum()) if len(det) else 0,
                           "crossing_resolution": info["crossing_resolution"],
@@ -89,10 +95,10 @@ def evaluate_synthetic(model, data_dir: Path, cfg: AnalysisConfig | None = None,
         "length_within_10%_fraction": float((rel_l.abs() < 0.1).mean()) if len(rel_l) else np.nan,
         "width_median_rel_error_%": 100 * rel_w.median(),
         "width_within_10%_fraction": float((rel_w.abs() < 0.1).mean()) if len(rel_w) else np.nan,
-        "population_mean_length_bias_%": 100 * (dist.measured_mean_length_complete.mean()
-                                                / dist.true_mean_length.mean() - 1),
-        "population_mean_width_bias_%": 100 * (dist.measured_mean_width.mean()
-                                               / dist.true_mean_width.mean() - 1),
+        # population level: all complete measured wires vs all fully visible true wires
+        **{f"population_{stat}_{q}_bias_%": 100 * (fn(pooled[q]) / fn(pooled[f"true_{q}"]) - 1)
+           for q in ("length", "width") for stat, fn in (("mean", np.mean), ("median", np.median))
+           if pooled[q]},
         "crossing_resolution": dist.crossing_resolution.mean(),
     }
     return {"summary": {k: (round(float(v), 4) if isinstance(v, (float, np.floating)) else v)

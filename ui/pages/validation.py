@@ -38,8 +38,11 @@ def _synthetic(model) -> None:
     m[1].metric("Length: within ±10 %", f"{s['length_within_10%_fraction'] * 100:.0f} %")
     m[2].metric("Width: median error", f"{s['width_median_rel_error_%']:+.1f} %")
     m[3].metric("Width: within ±10 %", f"{s['width_within_10%_fraction'] * 100:.0f} %")
-    st.caption(f"Population-level bias of the mean: length {s['population_mean_length_bias_%']:+.1f} %, "
-               f"width {s['population_mean_width_bias_%']:+.1f} %. In very dense meshes complete "
+    st.caption(f"Population level (all wires pooled): length bias mean "
+               f"{s.get('population_mean_length_bias_%', float('nan')):+.1f} % / median "
+               f"{s.get('population_median_length_bias_%', float('nan')):+.1f} %, width bias mean "
+               f"{s.get('population_mean_width_bias_%', float('nan')):+.1f} % / median "
+               f"{s.get('population_median_width_bias_%', float('nan')):+.1f} %. In very dense meshes complete "
                "wires under-represent long wires (long wires cross more often and are more "
                "likely to lose an end in a crossing) – keep this in mind when comparing samples "
                "of very different density.")
