@@ -14,7 +14,9 @@ The full scientific explanation of the design, with the mathematics, is in
 
 **Windows (easiest):** install Python 3.12 from <https://www.python.org/downloads/>
 (tick *Add python.exe to PATH*), then double-click **`install_windows.bat`** once
-and afterwards **`start_windows.bat`** to start the program.
+and afterwards **`start_windows.bat`** to start the program. The program opens in
+your web browser at <http://localhost:8501>; keep the black console window open
+while you work (closing it quits the program).
 
 **Manual installation (all systems):**
 
