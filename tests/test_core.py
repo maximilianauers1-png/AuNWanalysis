@@ -124,6 +124,21 @@ def test_crossing_wires_are_separated():
     assert info["crossing_resolution"] == 1.0
 
 
+def test_hidden_crossing_is_bridged():
+    """Visible-only labels: the lower wire's centre-line is interrupted by the upper wire."""
+    lower = straight(30, 128, 0, 200, 8)
+    upper = straight(128, 30, 75, 200, 12)
+    maps = render_maps([lower, upper])
+    yy, xx = np.mgrid[0:256, 0:256].astype(float)
+    d_up, _ = upper.distance_field(xx, yy)
+    d_low, _ = lower.distance_field(xx, yy)
+    maps["centerline"] = ((d_low <= 1) & (d_up > 6)) | (d_up <= 1)
+    maps["centerline"] = maps["centerline"].astype(np.float32)
+    wires, _ = analyze_maps(maps, AnalysisConfig())
+    assert len(wires) == 2
+    assert all(abs(w["length_px"] - 200) / 200 < 0.05 for w in wires)
+
+
 def test_width_map_handles_touching_wires():
     """Two parallel wires touching each other: the mask is one band twice as wide.
 

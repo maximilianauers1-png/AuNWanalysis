@@ -222,7 +222,10 @@ def build_graph(prob: np.ndarray, centerline: np.ndarray, cfg: AnalysisConfig,
         w_glob = float(max(2.0, np.median(width_map[skel])))
     else:
         w_glob = float(max(2.0, np.median(2 * edt[skel] - 1)))
-    r_j = int(np.ceil(0.5 * w_glob)) + 1
+    # junction zone radius: the centre-line head draws crossings as thin X shapes, so a few
+    # pixels suffice; None = classic choice from the wire width (w/2 + 1)
+    r_j = (int(cfg.junction_radius_px) if cfg.junction_radius_px
+           else int(np.ceil(0.5 * w_glob)) + 1)
 
     cn, nb = crossing_number(skel)
     is_junction = (cn >= 3) | (nb >= 4)
@@ -335,7 +338,7 @@ def pair_branches(g: Graph, prob: np.ndarray, orient: np.ndarray | None, cfg: An
     if len(free_tips) > 1:
         from scipy.spatial import cKDTree
         pts = np.array([e[3] for e in free_tips])
-        max_gap = 2.5 * g.width_px + 3
+        max_gap = 4.0 * g.width_px + 3                     # crossing wire (w) at angles down to ~30 deg
         cands = []
         for a, b in cKDTree(pts).query_pairs(max_gap):
             ea, eb = free_tips[a], free_tips[b]

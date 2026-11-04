@@ -213,12 +213,17 @@ class _Canvas:
         self.img[win] = self.img[win] * (1 - soft) + np.clip(level * prof, 0, 1) * soft
         if not wire.labelled:
             return
+        # Labels describe what is VISIBLE: the top-most wire at each pixel. This wire
+        # hides the centre-lines of the wires below it, so the lower wire's centre-line
+        # is interrupted at a crossing (the measurement bridges such gaps).
         inside = soft >= 0.5
+        own = d <= 1.0
         self.count[win] += inside
         self.angle[win] = np.where(inside, theta, self.angle[win])
         self.width[win] = np.where(inside, wire.width, self.width[win])
-        self.centerline[win] |= d <= 1.0
-        self.instance[win] = np.where(d <= 1.5, idx + 1, self.instance[win])
+        self.centerline[win] = (self.centerline[win] & ~inside) | own
+        self.instance[win] = np.where(d <= 1.5, idx + 1,
+                                      np.where(inside, 0, self.instance[win]))
 
 
 def _acquire(rng, img: np.ndarray, cfg: SyntheticConfig, low_noise: bool = False) -> np.ndarray:
@@ -299,10 +304,10 @@ def render_sample(rng: np.random.Generator, cfg: SyntheticConfig, size: int | No
     Returns a dict with
         image       uint8 (H, W)   normalised SEM-like image
         mask        uint8 (H, W)   1 = (labelled) wire
-        centerline  uint8 (H, W)   1 = within 1 px of a wire centre-line
-        angle       uint8 (H, W)   orientation in degrees [0, 180), 255 = ignore
+        centerline  uint8 (H, W)   1 = within 1 px of a VISIBLE wire centre-line
+        angle       uint8 (H, W)   orientation of the top-most wire, degrees [0, 180); 255 = background
         width       uint8 (H, W)   width of the top-most wire in 1/4 px (0 = background)
-        instance    int32 (H, W)   centre-line pixels labelled with wire index + 1
+        instance    int32 (H, W)   visible centre-line pixels labelled with wire index + 1
         wires       list[Wire]     ground-truth geometry
     """
     size = size or cfg.tile_size
@@ -310,11 +315,11 @@ def render_sample(rng: np.random.Generator, cfg: SyntheticConfig, size: int | No
     canvas, wires = (_dense3d if style == "dense3d" else _sparse)(rng, cfg, size)
     img8 = _acquire(rng, canvas.img, cfg, low_noise=style == "dense3d")
 
-    single = canvas.count == 1                     # orientation is ambiguous at crossings
-    ang = np.round(np.degrees(canvas.angle) % 180.0) % 180
-    return {"image": img8, "mask": (canvas.count > 0).astype(np.uint8),
-            "centerline": (canvas.centerline & (canvas.count > 0)).astype(np.uint8),
-            "angle": np.where(single, ang, IGNORE_ANGLE).astype(np.uint8),
+    wire = canvas.count > 0
+    ang = np.round(np.degrees(canvas.angle) % 180.0) % 180          # of the top-most wire
+    return {"image": img8, "mask": wire.astype(np.uint8),
+            "centerline": (canvas.centerline & wire).astype(np.uint8),
+            "angle": np.where(wire, ang, IGNORE_ANGLE).astype(np.uint8),
             "width": np.clip(np.round(canvas.width * WIDTH_SCALE), 0, 255).astype(np.uint8),
             "instance": canvas.instance, "wires": wires, "style": style}
 

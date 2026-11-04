@@ -92,6 +92,7 @@ class AnalysisConfig:
     tta: bool = True                  # test-time augmentation (4 flips)
     auto_scale: bool = True           # rescale image so wires are ~target_width px wide
     target_width_px: float = 12.0
+    junction_radius_px: float | None = None  # radius of junction zones (None: from the wire width)
     max_pair_angle_deg: float = 25.0  # max direction change when following a wire through a junction
     min_length_px: float = 12.0       # discard shorter objects (network pixels)
     min_aspect_ratio: float = 3.0     # length/width below this is treated as a particle
