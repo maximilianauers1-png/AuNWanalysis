@@ -39,7 +39,7 @@ def _settings() -> tuple[TrainConfig, str, str | None]:
 
 
 @st.fragment(run_every=3)
-def _monitor() -> None:
+def monitor_panel() -> None:
     mon: TrainingMonitor | None = common.trainer_slot()["monitor"]
     if mon is None:
         st.info("No training run in this session yet.")
@@ -117,4 +117,4 @@ def render() -> None:
         st.toast("Stopping after the current batch …")
     c[2].caption("Training runs in the background: you can switch steps meanwhile. "
                  "Detailed logs: `tensorboard --logdir models`.")
-    _monitor()
+    monitor_panel()

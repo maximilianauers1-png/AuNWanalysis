@@ -12,7 +12,7 @@ from aunw.inference import estimate_scale, resize_image
 from aunw.io import load_image
 from aunw.training import TrainingMonitor, finetune, model_file, run_in_background
 from ui import common
-from ui.pages.training import _monitor
+from ui.pages.training import monitor_panel
 
 
 def render() -> None:
@@ -80,4 +80,4 @@ def render() -> None:
         st.session_state["model_dir"] = str(MODELS_DIR / name)
         st.toast(f"Fine-tuning started: {len(real_train['image'])} real training tiles, "
                  f"{len(real_val['image'])} validation tiles")
-    _monitor()
+    monitor_panel()
