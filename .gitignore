@@ -11,3 +11,10 @@ docs/*.aux
 docs/*.log
 docs/*.toc
 docs/*.out
+models/*/progress.json
+models/*/progress.json.tmp
+models/*/preview.npz
+models/*/preview.npz.tmp
+models/*/train.log
+models/*/STOP
+models/*/real_tiles.npz
