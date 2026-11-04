@@ -30,7 +30,7 @@
 \begin{document}
 \maketitle
 \begin{abstract}
-This document explains every design decision of \emph{AuNW Analysis}. It covers the physically motivated generator of synthetic scanning-electron micrographs, the residual U-Net with three output heads (implemented in Keras\,3/TensorFlow), the training strategy against over-fitting, the graph algorithm that separates crossing wires, and the sub-pixel measurement of length and width. It also covers the statistics (including the edge correction for censored lengths), the validation methods and the fine-tuning with real SEM data. All equations correspond line by line to functions in the code; the relevant module is named in each section. The validation results, including failed design alternatives, are reported honestly so that you can judge the limits of the method.
+This document explains every design decision of \emph{AuNW Analysis}. It covers the physically motivated generator of synthetic scanning-electron micrographs, the residual U-Net with four output heads (implemented in Keras\,3/TensorFlow), the training strategy against over-fitting, the graph algorithm that separates crossing wires, and the sub-pixel measurement of length and width. It also covers the statistics (including the edge correction for censored lengths), the validation methods, the fine-tuning with real SEM data, and the second development stage that adapted the system to thick, three-dimensional meshes imaged with an in-lens detector (Section~\ref{sec:dense}). All equations correspond line by line to functions in the code; the relevant module is named in each section. The validation results, including failed design alternatives, are reported honestly so that you can judge the limits of the method.
 \end{abstract}
 \tableofcontents
 \newpage
@@ -122,6 +122,25 @@ I = \Bigl[\tfrac1N\,\mathrm{Poisson}\bigl(N\,(J*G_{\sigma_b})\bigr)+\varepsilon_
 \end{equation}
 where $G_{\sigma_b}$ is the probe point-spread function (Gaussian, $\sigma_b\in[0.4,1.4]$\,px). $N\in[15,250]$ is the electron dose per unit intensity, which gives a signal-to-noise ratio $\mathrm{SNR}=\sqrt{NJ}$. $\varepsilon_{\text{read}}$ is Gaussian read noise, $\eta_{\text{row}}$ a random offset per scan line, and $\gamma\in[0.8,1.25]$ a detector non-linearity. With probability 0.3 the image is JPEG re-compressed at quality 40--95, since colleagues often save micrographs as JPEG. Finally, the same robust normalisation as for real images is applied (Section~\ref{sec:io}).
 
+\subsection{Dense three-dimensional meshes (in-lens look)}\label{sec:dense3d}
+Real AuNW meshes are often thick, three-dimensional stacks imaged with an in-lens detector at low voltage (e.g.\ 1\,kV). Compared with wires on a substrate they differ in four ways, each modelled explicitly in the \code{dense3d} style (65\,\% of all training images):
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+\item \textbf{Depth.} Wires are distributed over $L\in[3,6]$ layers. Layer $l$ ($0$ = deepest) has brightness
+\begin{equation}
+b_l=b_{\text{top}}\Bigl[\delta+(1-\delta)\Bigl(\tfrac{l}{L-1}\Bigr)^{\gamma}\Bigr],\qquad \delta\in[0.25,0.6],
+\end{equation}
+because fewer secondary electrons escape from deeper in the stack. After each layer the image rendered so far is blurred with $G_{\sigma_l}$; since Gaussians compose, layer $l$ ends up blurred with $\sigma_{\text{eff},l}=(\sum_{k\ge l}\sigma_k^2)^{1/2}$. This is the limited depth of field. Optionally the deepest layer is an unlabelled ``texture'' of very blurred wires.
+\item \textbf{Shading.} Every wire darkens what lies below it by $1-h\,e^{-(d-R)/\lambda}$ next to its edge ($h$ up to 0.45).
+\item \textbf{Faceted ribbons.} Pentagonally twinned wires look like flat ribbons with longitudinal facets. With the signed lateral coordinate $n$, the profile is multiplied by $1+f\cos(2.4\,k(n)+\varphi)$, where $k(n)=\lfloor(n/w+\tfrac12)\,K\rfloor$ is the facet index ($K=2,3$). A dark outline $1-o\,e^{-((R-d)/0.9)^2}$ and fine transverse striations $1+a\sin(2\pi s/(\Lambda w)+\psi)$ along the arc length $s$ (period $\Lambda w$ with $\Lambda\in[0.08,0.3]$) complete the look.
+\item \textbf{Density, length and noise.} 3--9 wires per layer and $256^2$ tile, coverage typically 50--100\,\%, median length 150--900\,px (most wires cross the field), and long dwell times, i.e.\ low noise (log-uniform dose $N\in[30,1500]$).
+\end{enumerate}
+Figure~\ref{fig:dense} compares a real micrograph with synthetic images of this style.
+
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{figures/real_vs_synthetic.jpg}
+\caption{Left: real micrograph (in-lens, 1\,kV, 61\,kX). Right: synthetic \code{dense3d} images rendered by the generator at a similar wire width.}\label{fig:dense}
+\end{figure}
+
 \paragraph{Domain randomisation.} Every one of these parameters is drawn anew for every image. The network therefore sees a \emph{distribution} of imaging conditions that contains real microscopes as plausible samples, and it is forced to learn the invariant: the shape of a wire. Figure~\ref{fig:synth} shows examples with their labels.
 
 \begin{figure}[H]\centering
@@ -132,10 +151,10 @@ where $G_{\sigma_b}$ is the probe point-spread function (Gaussian, $\sigma_b\in[
 %==========================================================================
 \section{Learning targets and data pipeline}\label{sec:targets}
 %==========================================================================
-For every training tile three targets are stored (\code{dataset.py}):
+For every training tile four targets are stored (\code{dataset.py}). All of them describe what is \emph{visible}, i.e.\ the top-most wire at each pixel:
 \begin{description}[leftmargin=1.2em,itemsep=1pt]
 \item[Mask] $y_m(\mathbf x)=1$ if any wire covers $\mathbf x$ ($a\ge\tfrac12$).
-\item[Centre-line] $y_c(\mathbf x)=1$ if $d(\mathbf x)\le1$\,px for any wire, a 3-px wide line. At a crossing the two centre-lines cross cleanly, unlike the mask, where the wires merge into a blob.
+\item[Centre-line] $y_c(\mathbf x)=1$ if $d(\mathbf x)\le1$\,px for the \emph{visible} wire, a 3-px wide line. The upper wire of a crossing hides the centre-line of the lower one, whose centre-line is therefore interrupted; the measurement bridges such gaps (Section~\ref{sec:graph}). An earlier version also labelled the hidden parts. In thick meshes that asks the network for the impossible (centre-lines of wires buried under several others): it produced blurred maps, and even on \emph{perfect} labels the graph then recovered only 33\,\% of each wire as one piece, against 76\,\% with visible-only labels.
 \item[Orientation] The wire axis is an \emph{axial} quantity: $\theta$ and $\theta+\pi$ describe the same wire. Regressing $\theta$ directly would create an artificial discontinuity at $0^\circ/180^\circ$. We therefore use the double-angle representation
 \begin{equation}
 \mathbf o=(\cos2\theta,\sin2\theta)\in S^1,
@@ -144,7 +163,8 @@ which is continuous and unique for axial data. The prediction $\hat{\mathbf o}$ 
 \begin{equation}
 \|\mathbf o-\hat{\mathbf o}\|^2 = 2-2\cos 2\Delta\theta = 4\sin^2\Delta\theta \approx 4\Delta\theta^2 .
 \end{equation}
-At pixels covered by two wires the orientation is ambiguous, so a weight $\mu(\mathbf x)=0$ excludes them (and the background) from the loss.
+The orientation of the top-most wire is used; a weight $\mu(\mathbf x)=0$ excludes the background from the loss.
+\item[Width] $y_w(\mathbf x)=w$ of the top-most wire (in px), stored in steps of $\tfrac14$\,px. In a dense mesh the wire mask is one connected area, so the width cannot be read from mask edges: a cross-section of the mask runs straight into the touching neighbour. A per-pixel width map does not have this problem.
 \end{description}
 
 \paragraph{Label-consistent augmentation.} Random flips and $90^\circ$ rotations multiply the effective data by 8. They must be applied to the orientation \emph{vector}, not only to the pixel grid. A horizontal or vertical flip maps $\theta\mapsto-\theta \pmod\pi$, hence $(o_1,o_2)\mapsto(o_1,-o_2)$. A rotation by $90^\circ$ maps $\theta\mapsto\theta+\pi/2$, hence $2\theta\mapsto2\theta+\pi$ and $(o_1,o_2)\mapsto(-o_1,-o_2)$. These sign rules are implemented in \code{\_augment} and verified by a unit test that compares the transformed label with the principal axis of the transformed mask. Photometric augmentation (contrast, brightness, gamma, Gaussian noise) acts only on the input.
@@ -176,8 +196,8 @@ r = 1+\sum_{\ell=0}^{3}\bigl(4\cdot2^\ell+2^\ell\bigr)+4\cdot 16+\sum_{\ell=0}^{
 \end{equation}
 At the target wire width of about 9\,px (Section~\ref{sec:autoscale}), one output pixel therefore sees more than 20 wire widths. That is enough context to see both arms of a crossing and to decide which centre-line continues where.
 
-\paragraph{Three heads.} Three $1\times1$ convolutions on the last decoder features give
-$p_m=\sigma(\cdot)$, $p_c=\sigma(\cdot)$ and $\hat{\mathbf o}=\tanh(\cdot)\in(-1,1)^2$. The heads share all features (multi-task learning). The orientation task forces the shared features to encode direction, which also helps the centre-line head at crossings. The heads are computed in float32 even under mixed precision.
+\paragraph{Four heads.} Four $1\times1$ convolutions on the last decoder features give
+$p_m=\sigma(\cdot)$, $p_c=\sigma(\cdot)$, $\hat{\mathbf o}=\tanh(\cdot)\in(-1,1)^2$ and the width $\hat w=\operatorname{softplus}(\cdot)=\ln(1+e^{(\cdot)})>0$. The heads share all features (multi-task learning). The orientation task forces the shared features to encode direction, which also helps the centre-line head at crossings. The heads are computed in float32 even under mixed precision.
 
 \subsection{Loss functions}
 For a binary map with targets $y_i$ and predictions $p_i$ over the $N$ pixels of a tile,
@@ -189,7 +209,11 @@ and the mask and centre-line heads use $\mathcal L_{\text{BCE}}+\mathcal L_{\tex
 \begin{equation}
 \mathcal L_{\text{o}}=\frac{\sum_i\mu_i\,\|\mathbf o_i-\hat{\mathbf o}_i\|^2}{\sum_i\mu_i+1},
 \end{equation}
-and the total loss is $\mathcal L=\mathcal L_m+\mathcal L_c+0.5\,\mathcal L_o$. Monitored metrics are the hard Dice coefficient (F1 score) at threshold $0.5$ for mask and centre-line, and the mean axial angle error $\overline{\min(|\Delta\theta|,\pi-|\Delta\theta|)}$.
+the width loss is the weighted \emph{relative} error, which gives thin and thick wires equal importance,
+\begin{equation}
+\mathcal L_{\text{w}}=\frac{\sum_i m_i\,|\hat w_i-w_i|/\max(w_i,1)}{\sum_i m_i+1}\qquad(m_i=1\text{ on wire pixels}),
+\end{equation}
+and the total loss is $\mathcal L=\mathcal L_m+\mathcal L_c+0.5\,\mathcal L_o+0.5\,\mathcal L_w$. Monitored metrics are the hard Dice coefficient (F1 score) at threshold $0.5$ for mask and centre-line, and the mean axial angle error $\overline{\min(|\Delta\theta|,\pi-|\Delta\theta|)}$.
 
 %==========================================================================
 \section{Training and the control of over-fitting}\label{sec:training}
@@ -211,6 +235,8 @@ Over-fitting means that the training loss keeps decreasing while the loss on uns
 \item \textbf{Capacity regularisation}: decoupled weight decay, \code{SpatialDropout2D} (rate 0.15) in the two deepest levels and the bottleneck, where most parameters are, and BatchNorm. SpatialDropout drops whole feature maps rather than single activations, because neighbouring activations in a conv layer are strongly correlated and ordinary dropout would hardly regularise them.
 \item \textbf{Data augmentation} (Section~\ref{sec:targets}) and the practically unlimited synthetic data.
 \end{enumerate}
+
+\paragraph{Transfer learning.} When the architecture grows (as with the added width head), training does not start from random weights. All layers whose name and weight shapes agree are copied from the previous network (\code{transfer\_weights}), and only the new layers start from scratch. The dense-mesh network was obtained this way from the first network in two stages.
 
 \paragraph{Training as a separate process.} The GUI does not train inside its own process. It launches the same command a user could type (\code{python -m aunw.cli train \dots}) as a separate process, which writes its progress to \code{progress.json} and \code{preview.npz} in the model folder; the GUI only reads these files. A stop request is a file \code{STOP}, which the trainer checks after every batch, keeping the best weights. This design means that a crash in the numerical libraries can never take down the user interface (an early threaded version did exactly that inside the web server). It also means that training continues when the browser is closed, and that every GUI run is reproducible from the command shown on screen.
 
@@ -268,10 +294,10 @@ For every branch end inside junction $j$ we compute an outward unit vector $\mat
 \end{align}
 The tolerance grows with the gap because a direction error $\epsilon$ produces a lateral offset $\approx\epsilon|\mathbf r|$. Candidates are accepted greedily in order of increasing cost $c_{ab}=\delta_{ab}/\delta_{\max}+\ell_{ab}/\tau$, with every end used at most once and no cycles. Accepted pairs are merged with a union--find structure; each resulting set of branches is one wire. The tolerance model was not guessed. It was chosen from logged statistics of true and false pairs on ground-truth maps: true continuations have a median lateral offset of 0.9\,px, false pairs 9\,px, and the fixed 2-px tolerance used initially rejected 22\,\% of true pairs.
 
-\paragraph{Gap bridging.} Where two wires cross, the centre-line of the \emph{lower} wire can be interrupted, because the upper wire hides it. Its skeleton then ends in two facing free tips instead of a junction. Two free tips are therefore also linked when they are at most $2.5w+3$\,px apart (candidates from a $k$-d tree), satisfy the same deflection and collinearity criteria, point towards each other ($\mathbf u_a\cdot\mathbf r>0$), and the straight segment between them lies entirely inside the wire mask ($\min p_m>\tfrac12$ along it), i.e.\ the wire visibly continues underneath.
+\paragraph{Gap bridging.} Where two wires cross, the centre-line of the \emph{lower} wire can be interrupted, because the upper wire hides it. Its skeleton then ends in two facing free tips instead of a junction. Two free tips are therefore also linked when they are at most $4w+3$\,px apart (a crossing wire of width $w$ at angles down to about $30^\circ$) (candidates from a $k$-d tree), satisfy the same deflection and collinearity criteria, point towards each other ($\mathbf u_a\cdot\mathbf r>0$), and the straight segment between them lies entirely inside the wire mask ($\min p_m>\tfrac12$ along it), i.e.\ the wire visibly continues underneath.
 
 \subsection{End classification and the ``complete'' flag}
-Every unpaired end is classified as a \emph{tip} (a free end not at the border), a \emph{T-end} (the only unpaired end in its junction: all other arms continue, so the wire ends on top of another wire), \emph{unresolved} (unpaired in a junction with other unpaired ends), or \emph{border}. A wire is \textbf{complete} if both ends are tips and it does not touch the border. Only then is its length fully observed. On ground truth, complete wires had a gross length error ($<-10\,\%$) in only $0.5\,\%$ of cases, against 26\,\% for wires with one T-end and 62\,\% with two. Length statistics therefore use complete wires; width statistics use all wires, because truncation does not affect width.
+Every unpaired end is classified as a \emph{tip} (a free end, not at the border, at which the wire mask ends as well), a \emph{T-end} (the only unpaired end in its junction: all other arms continue, so the wire ends on top of another wire), \emph{unresolved} (unpaired in a junction with other unpaired ends), or \emph{border}. A wire is \textbf{complete} if both ends are tips and it does not touch the border. Only then is its length fully observed. On ground truth, complete wires had a gross length error ($<-10\,\%$) in only $0.5\,\%$ of cases, against 26\,\% for wires with one T-end and 62\,\% with two. Length statistics therefore use complete wires; width statistics use all wires, because truncation does not affect width.
 
 %==========================================================================
 \section{Measurement}\label{sec:measure}
@@ -287,12 +313,14 @@ which over-estimates $L$ by up to $\sqrt{4-2\sqrt2}-1=8.2\,\%$ at $\varphi=22.5^
 \end{equation}
 The wire length is the sum of its branch lengths, the bridged junction gaps $|\mathbf r_{ab}|$, and end corrections. Each free end adds $w/2$, because the centre-line stops at the centre of the hemispherical cap, cf.\ Eq.~\eqref{eq:capsule}. An end inside a junction adds the distance to the junction centre, bounded by $r_j+w$.
 
-\subsection{Width with sub-pixel precision}
-At every second centre-line pixel, at least one width away from tips and junctions, the mask probability is sampled along the local normal $\mathbf n$ (bilinear interpolation, step $\Delta t=0.25$\,px): $p(t)=p_m(\mathbf x+t\mathbf n)$. The edges are the first samples with $p\le\tfrac12$ on either side, refined by linear interpolation:
+\subsection{Width}
+\paragraph{Primary: width map.} The width of a wire is the median of the predicted width map $\hat w$ along its centre-line, excluding junction neighbourhoods. Away from crossings the top-most wire at a centre-line pixel is the wire itself, so $\hat w$ there is its own width, even if neighbours touch it. A unit test checks two touching parallel wires, for which the edge-profile method below measures the double width.
+
+\paragraph{Cross-check: sub-pixel edge profiles.} At every second centre-line pixel, at least one width away from tips and junctions, the mask probability is sampled along the local normal $\mathbf n$ (bilinear interpolation, step $\Delta t=0.25$\,px): $p(t)=p_m(\mathbf x+t\mathbf n)$. The edges are the first samples with $p\le\tfrac12$ on either side, refined by linear interpolation:
 \begin{equation}
 t_{\text{edge}}=t_{k-1}+\frac{p_{k-1}-\tfrac12}{p_{k-1}-p_k}\,\Delta t,\qquad w_i=t_{\text{edge}}^{+}+t_{\text{edge}}^{-}.
 \end{equation}
-The $\tfrac12$ level is the natural edge criterion: a step edge convolved with any symmetric point-spread function crosses $\tfrac12$ exactly at the true edge, and a calibrated posterior equals $\tfrac12$ at the decision boundary. The wire width is the \emph{median} of all $w_i$, which is robust to the outliers caused by touching neighbours and particles. If fewer than 3 profiles are valid, the distance-transform estimate $2\,\mathrm{EDT}-1$ is used.
+The $\tfrac12$ level is the natural edge criterion: a step edge convolved with any symmetric point-spread function crosses $\tfrac12$ exactly at the true edge, and a calibrated posterior equals $\tfrac12$ at the decision boundary. The wire width is the \emph{median} of all $w_i$, which is robust to the outliers caused by touching neighbours and particles. If fewer than 3 profiles are valid, the distance-transform estimate $2\,\mathrm{EDT}-1$ is used. This value is exported as \code{width\_profile\_px}; it is exact for isolated wires.
 
 %==========================================================================
 \section{Statistics}\label{sec:stats}
@@ -369,7 +397,7 @@ Per image: $|$bias$|$ of median width & 2.5\,\% & 3.3\,\% & 1.2\,\% \\\bottomrul
 
 \paragraph{Interpretation.} Individual wires are measured essentially without bias: median errors are below 1\,\% for both length and width. At moderate density, the per-image deviations of the median length (typically 4\,\%, at most 14\,\%) are consistent with pure sampling noise. With $n\approx20$ complete wires from a log-normal population with $\sigma\approx0.45$, the standard error of the median is $\approx1.25\,\sigma/\sqrt n\approx12\,\%$. This is why the software always reports bootstrap confidence intervals, and why several images per sample should be analysed.
 
-\paragraph{The physical limit: dense meshes.} Above roughly 40\,\% areal coverage most wire ends lie underneath other wires and cannot be observed, by this software or by a human. Complete wires then become rare (fewer than 35 in a $768^2$ image) and preferentially short, because a long wire crosses more wires and is more likely to lose an end ($P(\text{complete})\propto p^{k}$ for $k$ crossings resolved with probability $p$). The stereological estimator also degrades, because hidden ends are not counted. The width remains reliable at all densities (per-image bias $\le5\,\%$ up to 80\,\% coverage). The software therefore reports the coverage and a reliability class for every image (Section~\ref{sec:stats}). For length measurements on dense meshes, image regions of lower density or higher magnification should be used.
+\paragraph{The physical limit: dense meshes.} Above roughly 40\,\% areal coverage most wire ends lie underneath other wires and cannot be observed, by this software or by a human. Complete wires then become rare (fewer than 35 in a $768^2$ image) and preferentially short, because a long wire crosses more wires and is more likely to lose an end ($P(\text{complete})\propto p^{k}$ for $k$ crossings resolved with probability $p$). The stereological estimator also degrades, because hidden ends are not counted. The width remains reliable at all densities (per-image bias $\le5\,\%$ up to 80\,\% coverage). The software therefore reports the coverage and a reliability class for every image (Section~\ref{sec:stats}). For length measurements on dense meshes, use images at \emph{lower} magnification, in which whole wires are visible, and keep the high-magnification images for the width.
 
 \paragraph{Design alternatives that were tested and rejected.} Reporting these is part of good scientific practice:
 \begin{itemize}[leftmargin=*,itemsep=1pt]
