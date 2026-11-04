@@ -88,9 +88,15 @@ def render() -> None:
         st.warning(f"⚠️ Dense mesh – some wire ends are hidden; length statistics may be biased "
                    f"towards short wires. Width is reliable. {msg}")
     else:
-        st.error(f"✗ Very dense mesh – most wire ends are hidden under other wires; length "
-                 f"statistics are not reliable (width still is). {msg}")
+        st.error("✗ Very dense mesh – most wire ends are hidden under other wires, so wire "
+                 "lengths cannot be measured in this image. The **width is reliable**. "
+                 f"(analysis scale {r.scale:.2f}×)")
 
+    w_an = r.info.get("width_px_global", float("nan"))
+    if w_an < 5:
+        st.warning(f"⚠️ The wires are only about {w_an:.1f} px wide at the analysis scale. Widths below "
+                   "~5 px are at the resolution limit (± 0.5 px is already ± 10 %). Record images at "
+                   "higher magnification for accurate widths.")
     if len(df) and df["touches_border"].mean() > 0.6:
         st.info(f"ℹ️ {df['touches_border'].mean():.0%} of the wires leave the field of view, so their "
                 "length cannot be measured in this image (the width can). For length statistics "
@@ -102,7 +108,8 @@ def render() -> None:
         rgb = overlay(images[name].pixels, df, r.info["paths"], show_ids=ids) if len(df) else None
         if rgb is not None:
             st.image(rgb, width="stretch",
-                     caption="blue = complete · orange = end in a crossing · grey = cut by border")
+                     caption="blue = complete (length + width) · orange = ends in a crossing (width) · "
+                             "green = cut by the image border (width)")
             buf = io.BytesIO()
             Image.fromarray(rgb).save(buf, "PNG")
             st.download_button("⬇ Overlay (PNG)", buf.getvalue(), f"{name}_overlay.png", "image/png")

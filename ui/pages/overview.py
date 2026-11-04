@@ -48,4 +48,4 @@ def render() -> None:
     with st.expander("Colour code of the overlays"):
         st.markdown("- **Blue** – complete wire (both tips visible): used for length statistics\n"
                     "- **Orange** – wire whose end disappears in a crossing: used for width only\n"
-                    "- **Grey** – wire cut by the image border: used for width only")
+                    "- **Green** – wire cut by the image border: used for width only")

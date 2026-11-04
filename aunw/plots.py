@@ -133,10 +133,11 @@ def box_by_image(df: pd.DataFrame, col: str, label: str, unit: str, f: float = 1
 # --------------------------------------------------------------------------- images
 def overlay(image: np.ndarray, wires: pd.DataFrame, paths: list, show_ids: bool = True,
             thickness: int = 2) -> np.ndarray:
-    """RGB overlay: complete wires blue, incomplete orange, border-touching grey."""
+    """RGB overlay: complete wires blue, ending in a crossing orange, cut by the border green."""
     rgb = cv2.cvtColor((np.clip(image, 0, 1) * 255).astype(np.uint8), cv2.COLOR_GRAY2RGB)
     rgb = (rgb * 0.75).astype(np.uint8)
-    colours = {"complete": (42, 120, 214), "partial": (235, 104, 52), "border": (160, 160, 160)}
+    colours = {"complete": (42, 120, 214), "partial": (235, 104, 52), "border": (27, 175, 122)}
+    thickness = max(thickness, int(round(min(image.shape) / 300)))   # visible on large images
     for (_, row), segs in zip(wires.iterrows(), paths):
         kind = "complete" if row["complete"] else ("border" if row["touches_border"] else "partial")
         for p in segs:

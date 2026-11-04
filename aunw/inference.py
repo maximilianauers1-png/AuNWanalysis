@@ -14,9 +14,10 @@ Test-time augmentation (TTA)
     is undone on the double-angle vector: (c, s) -> (c, -s) for a single flip.
 
 Automatic scale
-    The network was trained on wires 3-20 px wide. If a micrograph shows much
-    wider (or thinner) wires, it is resized so that the median wire width is
-    about `target_width_px`; all measurements are converted back afterwards.
+    The network was trained on wires 3-22 px wide. If a micrograph shows much
+    wider wires, it is shrunk so that the median wire width is about
+    `target_width_px`; all measurements are converted back afterwards. Thin wires
+    are enlarged by at most 1.5x - stronger up-scaling creates artefacts.
 """
 from __future__ import annotations
 
@@ -120,7 +121,9 @@ def estimate_scale(model: keras.Model, image: np.ndarray, cfg: AnalysisConfig,
         ratio = cfg.target_width_px / wpx
         if 0.75 < ratio < 1.33:
             break
-        scale = float(np.clip(scale * ratio, 0.1, 4.0))
+        # Up-scaling beyond ~1.5x makes interpolated noise look like fine wire texture
+        # (validated on synthetic images): enlarge only moderately, shrink freely.
+        scale = float(np.clip(scale * ratio, 0.1, 1.5))
     return scale
 
 

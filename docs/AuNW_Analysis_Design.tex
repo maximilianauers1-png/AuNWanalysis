@@ -361,7 +361,7 @@ Single straight wire, four angles (unit test) & length $<3\,\%$, width $<5\,\%$\
 \end{tabular}
 \end{table}
 
-\paragraph{(2) The complete chain with the trained network.} The network shipped with the software (\code{models/cpu\_starter\_f16}: 16 base filters, 2.1\,M parameters) was trained on 1600 synthetic tiles for 35 epochs on 4 CPU cores (about 2\,h). Training and validation loss decreased together (Fig.~\ref{fig:curves}): there was no over-fitting, and the best validation loss was reached in the last epoch. A longer run on a GPU, or the larger default network (24 filters), can therefore be expected to improve the results further.
+\paragraph{(2) The complete chain with the trained network (stage 1).} The first network (16 base filters, 2.1\,M parameters, trained on substrate-style images only) was trained on 1600 synthetic tiles for 35 epochs on 4 CPU cores (about 2\,h). Training and validation loss decreased together (Fig.~\ref{fig:curves}): there was no over-fitting, and the best validation loss was reached in the last epoch. A longer run on a GPU, or the larger default network (24 filters), can therefore be expected to improve the results further.
 
 \begin{figure}[H]\centering
 \includegraphics[width=\linewidth]{figures/training_curves.pdf}
@@ -399,11 +399,42 @@ Per image: $|$bias$|$ of median width & 2.5\,\% & 3.3\,\% & 1.2\,\% \\\bottomrul
 
 \paragraph{The physical limit: dense meshes.} Above roughly 40\,\% areal coverage most wire ends lie underneath other wires and cannot be observed, by this software or by a human. Complete wires then become rare (fewer than 35 in a $768^2$ image) and preferentially short, because a long wire crosses more wires and is more likely to lose an end ($P(\text{complete})\propto p^{k}$ for $k$ crossings resolved with probability $p$). The stereological estimator also degrades, because hidden ends are not counted. The width remains reliable at all densities (per-image bias $\le5\,\%$ up to 80\,\% coverage). The software therefore reports the coverage and a reliability class for every image (Section~\ref{sec:stats}). For length measurements on dense meshes, use images at \emph{lower} magnification, in which whole wires are visible, and keep the high-magnification images for the width.
 
+\subsection{Stage 2: dense three-dimensional meshes and real micrographs}\label{sec:dense}
+The first real micrographs supplied by the user (in-lens detector, 1\,kV, 61 and 80\,kX) showed thick, chaotic 3-D meshes with almost 100\,\% coverage. The stage-1 network traced them only in fragments. Four changes, each tested, led to the shipped network \code{models/aunw\_dense\_f16}:
+\begin{enumerate}[leftmargin=*,itemsep=1pt]
+\item the \code{dense3d} generator style (Section~\ref{sec:dense3d});
+\item the width head (Sections~\ref{sec:targets} and~\ref{sec:measure});
+\item \textbf{visible-only labels}. This was the decisive change. With labels that included hidden centre-lines, even \emph{perfect} maps gave a wire continuity of only 0.33. Continuity is the length-weighted fraction of a true wire's visible centre-line covered by a single detected wire. Visible-only labels raised it to 0.76 on perfect maps and from 0.28 to 0.56 for the network;
+\item a capped automatic scale. Enlarging images by more than about $1.5\times$ made interpolated noise look like fine wires (hundreds of phantom wires), so the image is now only shrunk freely and enlarged by at most $1.5\times$, and the software warns when wires are narrower than about 5\,px.
+\end{enumerate}
+Training started from the stage-1 weights (transfer learning) and ran for 30 epochs on 2000 tiles (about 2\,h on 4 CPU cores). Training and validation loss stayed together; the best epoch was the last one.
+
+\begin{table}[H]\centering\small
+\caption{Shipped network on 12 dense synthetic $768^2$ images (coverage 55--97\,\%), compared with width from edge profiles.}\label{tab:dense}
+\begin{tabular}{@{}lc@{}}\toprule
+Mask Dice / centre-line Dice / orientation error & 0.955 / 0.744 / $6.9^\circ$ \\
+Width (width map): median error per wire & $-0.9\,\%$ \\
+Width (width map): wires within $\pm10\,\%$ & \textbf{85\,\%} \\
+Width (edge profiles): wires within $\pm10\,\%$ & 27\,\% \\
+Per image: $|$bias$|$ of the median width & 2.7\,\% \\
+Complete wires (length measurable) & 4 in 12 images \\\bottomrule
+\end{tabular}
+\end{table}
+
+\paragraph{Real micrographs.} On the two real images the network traces most visible wires as single wires across the field (Fig.~\ref{fig:real}). Correctly, almost none is classified as complete: nearly all wires leave the field of view, so their length cannot be measured from these images. The median widths are 150.7\,nm (61\,kX, 8.33\,nm/px, IQR 139--163\,nm) and 144.2\,nm (80\,kX, 6.38\,nm/px, IQR 130--157\,nm). Two images at different magnifications, and therefore different pixel sizes, agree within 4.5\,\%, which is a consistency check of the calibration and of the scale invariance. The edge-profile width gives 262 and 242\,nm on the same images: in a dense mesh the cross-section runs into touching wires, as predicted. Calibration was taken from the scale bar of screenshots; with the original TIFF files the pixel size is read from the metadata.
+
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{figures/ui_analyse_real.jpg}
+\caption{Analysis of a real micrograph (step 6). Green: wires traced across the field and cut by the border (width only); orange: wires ending in a crossing (width only). The reliability check correctly reports that lengths cannot be measured in this image.}\label{fig:real}
+\end{figure}
+
+\paragraph{Recommended measurement protocol.} (i) Width: high-magnification images such as these (wire width $\gtrsim10$\,px), several images per sample. (ii) Length: images at a magnification low enough that whole wires, including both tips, are visible and coverage is below about 30\,\%. (iii) Check a few wires against manual measurements (step 4) and, if needed, fine-tune with 3--5 corrected masks (step 8).
+
 \paragraph{Design alternatives that were tested and rejected.} Reporting these is part of good scientific practice:
 \begin{itemize}[leftmargin=*,itemsep=1pt]
 \item \emph{Junction contraction} (merging junctions joined by short branches, intended for shallow-angle crossings) reduced the fraction of wires within $\pm10\,\%$ from 71\,\% to 60\,\% and was removed.
 \item \emph{Counting T-ends as complete} raised the number of usable wires but admitted 26--62\,\% fragments.
-\item \emph{Gap bridging} (Section~\ref{sec:graph}) was kept although its measurable gain on the test sets was small (crossings resolved 79\,\%$\to$82\,\%); the dominant length bias in dense meshes is the physical selection effect above, not interrupted centre-lines.
+\item \emph{Gap bridging} (Section~\ref{sec:graph}) brought only a small gain in stage 1 (crossings resolved 79\,\%$\to$82\,\%). With the visible-only labels of stage 2 it became the mechanism that follows a lower wire through every crossing.
 \item \emph{Horvitz--Thompson weights $p^{-k}$} for the survivorship bias, with $p$ estimated per image (globally or per junction degree), over-corrected the mean by $+36$ to $+57\,\%$ because $p$ is strongly heterogeneous, and was not adopted.
 \end{itemize}
 
@@ -423,10 +454,10 @@ The train/validation split for real data must be made \emph{by image, never by t
 %==========================================================================
 \section{Using the software}
 %==========================================================================
-Install with \code{pip install -r requirements.txt} and start with \code{streamlit run app.py}. The blue column on the left lists the steps; completed steps are marked with \checkmark. The active network is selected at the bottom of the column. For routine analysis only steps 5--7 are needed:
+On Windows, \code{install\_windows.bat} installs everything once and creates a desktop and start-menu shortcut with the program icon, a beaker filled with gold nanowires (\code{tools/make\_icon.py} draws it). Clicking it runs \code{desktop.py}, which starts the analysis server invisibly on a free local port and shows the interface in a native window (pywebview with the Edge WebView2 engine; fallback: Edge or Chrome in app mode, without tabs or address bar). Closing the window stops everything. On other systems: \code{python desktop.py}, or \code{streamlit run app.py} for the browser version. The blue column on the left lists the steps; completed steps are marked with \checkmark. The active network is selected at the bottom of the column. For routine analysis only steps 5--7 are needed:
 \begin{description}[leftmargin=1.2em,itemsep=1pt]
 \item[Step 5] Upload TIFF/JPEG/PNG files, or read a whole folder. Check the cropped information bar and the calibration (metadata, nm/px or scale bar). The calibration of the first image can be applied to all.
-\item[Step 6] Run the analysis. The overlay colours complete wires blue, wires ending in a crossing orange, and wires cut by the border grey. Tabs show the raw network output and the table of all wires.
+\item[Step 6] Run the analysis. The overlay colours complete wires blue, wires ending in a crossing orange, and wires cut by the border green. Tabs show the raw network output and the table of all wires.
 \item[Step 7] Choose the unit and the edge correction. The page shows the summary table, histograms with normal and log-normal fits, length vs.\ width, per-image box plots and CDFs. Downloads: CSV, Excel (sheets \emph{Summary}, \emph{Wires}, \emph{Per image}, \emph{Settings}), each figure as PNG (300\,dpi), SVG or PDF, and a ZIP of everything, including overlays and the exact analysis settings for reproducibility.
 \end{description}
 Headless use, for example training on a GPU server, is possible with \code{python -m aunw.cli} and the sub-commands \code{generate}, \code{train}, \code{finetune}, \code{evaluate} and \code{analyze}. All processing is local: the server listens only on \code{localhost} and usage statistics are disabled.

@@ -69,20 +69,27 @@ included, so you can start analysing images in step 5 straight away. Training
 started from the GUI runs as a separate process (`python -m aunw.cli train …`),
 so it continues even if the browser is closed.
 
-## Accuracy (shipped network, synthetic test images with known truth)
+## Accuracy
 
-| | moderate meshes (coverage 4–44 %) |
-|---|---|
-| Mask Dice | 0.982 |
-| Length of complete wires: median error / within ±10 % | +0.4 % / 92 % |
-| Width: median error / within ±10 % | −0.7 % / 92 % |
-| Per image: typical bias of median length / median width | 4.4 % / 1.2 % |
+The shipped network (`models/aunw_dense_f16`) was trained on synthetic images of
+both sparse wires on a substrate and thick 3-D meshes as seen with an in-lens
+detector. On synthetic test images with known truth:
 
-The width is reliable at every density. Length needs visible wire ends, so
-each image is labelled with its **areal coverage** and a reliability class
-(good ≤ 30 % < caution ≤ 45 % < length unreliable). Each image also gets a
-second, independent stereological mean length, ⟨L⟩ = 2 · total length / number of ends,
-as a cross-check. The details are in the PDF, section 10.
+| | dense 3-D meshes (coverage 55–97 %) | moderate meshes (coverage ≤ 30 %) |
+|---|---|---|
+| Width: median error per wire | −0.9 % | +0.3 % |
+| Width: wires within ±10 % | 85 % | 62 % (incl. 3-px-thin wires) |
+| Width: typical bias of an image's median | 2.7 % | 5.4 % |
+| Length of complete wires: within ±10 % | – (ends hidden) | 94 % |
+
+On two real micrographs (in-lens, 1 kV, 61 and 80 kX) the median widths were
+151 nm and 144 nm, consistent across magnifications.
+
+**Recommended protocol:** use high-magnification images (wires ≳ 10 px wide)
+for the **width**, and lower-magnification images in which whole wires are
+visible for the **length**. Each image is labelled with its areal coverage and a
+reliability class; in very dense meshes the app reports width only, because
+most wire ends are hidden. Details are in the PDF, section 10.
 
 ## Command line (e.g. training on a GPU server)
 
