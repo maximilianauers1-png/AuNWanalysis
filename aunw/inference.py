@@ -42,10 +42,14 @@ def _window(tile: int, overlap: int) -> np.ndarray:
 
 
 def _predict_batch(model: keras.Model, batch: np.ndarray, tta: bool) -> np.ndarray:
-    """Return stacked outputs (N, H, W, 4): mask, centerline, cos2t, sin2t."""
+    """Return stacked outputs (N, H, W, 5): mask, centerline, cos2t, sin2t, width.
+
+    Models trained before the width head existed get a width channel of zeros.
+    """
     def run(x):
         out = model.predict_on_batch(x)
-        return np.concatenate([out["mask"], out["centerline"], out["orientation"]], -1)
+        width = out["width"] if "width" in out else np.zeros_like(out["mask"])
+        return np.concatenate([out["mask"], out["centerline"], out["orientation"], width], -1)
 
     if not tta:
         return run(batch)
@@ -71,7 +75,7 @@ def predict_tiled(model: keras.Model, image: np.ndarray, tile: int = 256, overla
     pad = ((overlap, ph - h - overlap), (overlap, pw - w - overlap))
     img = np.pad(image, pad, mode="reflect")[..., None].astype(np.float32)
 
-    acc = np.zeros(img.shape[:2] + (4,), np.float32)
+    acc = np.zeros(img.shape[:2] + (5,), np.float32)
     wsum = np.zeros(img.shape[:2] + (1,), np.float32)
     win = _window(tile, overlap)
     coords = [(y, x) for y in range(0, ph - tile + 1, step) for x in range(0, pw - tile + 1, step)]
@@ -82,7 +86,10 @@ def predict_tiled(model: keras.Model, image: np.ndarray, tile: int = 256, overla
             acc[y:y + tile, x:x + tile] += p * win
             wsum[y:y + tile, x:x + tile] += win
     out = (acc / np.maximum(wsum, 1e-6))[overlap:overlap + h, overlap:overlap + w]
-    return {"mask": out[..., 0], "centerline": out[..., 1], "orientation": out[..., 2:4]}
+    maps = {"mask": out[..., 0], "centerline": out[..., 1], "orientation": out[..., 2:4]}
+    if out[..., 4].any():                                   # model has a width head
+        maps["width"] = out[..., 4]
+    return maps
 
 
 def resize_image(img: np.ndarray, scale: float) -> np.ndarray:
@@ -140,7 +147,8 @@ def analyze_image(model: keras.Model, sem: SEMImage, cfg: AnalysisConfig,
 
     df = pd.DataFrame([{k: v for k, v in w.items() if k != "path"} for w in wires])
     if len(df):
-        for col in ("length_px", "width_px", "x_px", "y_px", "extent_x_px", "extent_y_px"):
+        for col in ("length_px", "width_px", "width_profile_px", "x_px", "y_px", "extent_x_px",
+                    "extent_y_px"):
             df[col] = df[col] / scale                       # back to original pixels
         if sem.nm_per_px:
             for col in ("length", "width"):

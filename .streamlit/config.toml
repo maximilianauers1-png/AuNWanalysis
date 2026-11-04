@@ -7,6 +7,9 @@ address = "localhost"
 maxUploadSize = 2000
 headless = true
 
+[client]
+toolbarMode = "minimal"      # no developer / "Deploy" menu
+
 [theme]
 base = "light"
 primaryColor = "#1a56c4"

@@ -42,6 +42,12 @@ class SyntheticConfig:
     blur_sigma: tuple[float, float] = (0.4, 1.4)  # electron-probe PSF (Gaussian)
     photons: tuple[float, float] = (15.0, 250.0)  # Poisson dose; lower = noisier
     jpeg_prob: float = 0.3           # probability of JPEG re-compression artefacts
+    # dense 3-D meshes (in-lens detector look): depth layers, defocus, faceted ribbons
+    dense_prob: float = 0.65                         # fraction of images in this style
+    dense_layers: tuple[int, int] = (3, 7)           # number of depth layers
+    dense_wires_per_layer: tuple[int, int] = (3, 9)  # per 256^2 tile
+    dense_length_median: tuple[float, float] = (150.0, 900.0)  # long: most cross the tile
+    dense_width_mean: tuple[float, float] = (6.0, 22.0)
 
 
 @dataclass
@@ -69,7 +75,7 @@ class TrainConfig:
     early_stop_patience: int = 10     # epochs without val improvement before stopping
     lr_patience: int = 4              # epochs before the learning rate is halved
     loss_weights: dict[str, float] = field(
-        default_factory=lambda: {"mask": 1.0, "centerline": 1.0, "orientation": 0.5}
+        default_factory=lambda: {"mask": 1.0, "centerline": 1.0, "orientation": 0.5, "width": 0.5}
     )
     augment: bool = True
     mixed_precision: bool = False     # only worthwhile on a recent GPU
@@ -85,7 +91,7 @@ class AnalysisConfig:
     tile_overlap: int = 64            # overlap of sliding-window tiles (px)
     tta: bool = True                  # test-time augmentation (4 flips)
     auto_scale: bool = True           # rescale image so wires are ~target_width px wide
-    target_width_px: float = 9.0
+    target_width_px: float = 12.0
     max_pair_angle_deg: float = 25.0  # max direction change when following a wire through a junction
     min_length_px: float = 12.0       # discard shorter objects (network pixels)
     min_aspect_ratio: float = 3.0     # length/width below this is treated as a particle

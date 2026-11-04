@@ -31,7 +31,14 @@ if errorlevel 1 ( echo Creating the virtual environment failed. & pause & exit /
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 if errorlevel 1 ( echo Installing the packages failed. & pause & exit /b 1 )
 
+REM native application window (optional: without it the program opens in Edge/Chrome app mode)
+.venv\Scripts\python.exe -m pip install pywebview
+if errorlevel 1 echo pywebview could not be installed - the app will open in an Edge/Chrome window instead.
+
+REM desktop + start-menu shortcut with the beaker icon
+powershell -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\create_shortcut.ps1"
+
 echo.
-echo  Installation finished. Start the program with start_windows.bat
+echo  Installation finished. Start the program with the "AuNW Analysis" icon on your desktop.
 echo.
 pause

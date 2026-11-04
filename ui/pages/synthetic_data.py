@@ -36,6 +36,17 @@ def _config_form():
         cfg.photons = common.range_slider("Electron dose (higher = less noise)", 5.0, 500.0,
                                           cfg.photons, 5.0)
         cfg.jpeg_prob = st.slider("Probability of JPEG artefacts", 0.0, 1.0, cfg.jpeg_prob, 0.05)
+    st.markdown("**Dense 3-D meshes** (in-lens look: depth layers, defocus, faceted ribbons)")
+    c1, c2, c3 = st.columns(3)
+    cfg.dense_prob = c1.slider("Fraction of dense 3-D images", 0.0, 1.0, cfg.dense_prob, 0.05)
+    cfg.dense_layers = tuple(c1.slider("Depth layers", 2, 10, tuple(cfg.dense_layers), 1))
+    cfg.dense_wires_per_layer = tuple(c2.slider("Wires per layer (per 256² tile)", 1, 20,
+                                                tuple(cfg.dense_wires_per_layer), 1))
+    with c2:
+        cfg.dense_width_mean = common.range_slider("Mean width in dense meshes [px]", 3.0, 30.0,
+                                                   cfg.dense_width_mean, 0.5)
+    cfg.dense_length_median = tuple(c3.slider("Median length in dense meshes [px]", 50.0, 2000.0,
+                                              tuple(cfg.dense_length_median), 10.0))
     return cfg
 
 
@@ -45,17 +56,19 @@ def _preview(cfg) -> None:
         st.session_state["preview_seed"] = seed = seed + 1
     rng = np.random.default_rng(seed)
     samples = [render_sample(rng, cfg) for _ in range(3)]
+    import matplotlib.cm as cm
     for s in samples:
         ang = s["angle"].astype(float)
         ang_rgb = np.zeros(ang.shape + (3,))
         valid = ang != IGNORE_ANGLE
-        import matplotlib.cm as cm
         ang_rgb[valid] = cm.hsv(ang[valid] / 180)[:, :3]
-        cols = st.columns(4)
-        cols[0].image(s["image"], caption=f"SEM image ({len(s['wires'])} wires)", clamp=True)
+        wmap = cm.viridis(s["width"] / max(int(s["width"].max()), 1))[..., :3] * (s["width"] > 0)[..., None]
+        cols = st.columns(5)
+        cols[0].image(s["image"], caption=f"SEM image – {s['style']} ({len(s['wires'])} wires)", clamp=True)
         cols[1].image(s["mask"] * 255, caption="Label: wire mask")
         cols[2].image(s["centerline"] * 255, caption="Label: centre-lines")
-        cols[3].image(ang_rgb, caption="Label: orientation (hue), black = ignored", clamp=True)
+        cols[3].image(ang_rgb, caption="Label: orientation (hue)", clamp=True)
+        cols[4].image(wmap, caption="Label: local width (colour)", clamp=True)
 
 
 def render() -> None:
@@ -65,7 +78,9 @@ def render() -> None:
         st.markdown(
             "Labelling every pixel of hundreds of overlapping wires by hand is not feasible. "
             "The renderer draws each wire as a capsule along a circular arc and computes "
-            "**exact** masks, centre-lines and orientations. The SEM look is simulated: bright "
+            "**exact** masks, centre-lines, orientations and widths. The SEM look is simulated "
+            "in two styles – wires on a substrate, and thick 3-D meshes with depth layers "
+            "(deeper = darker and blurred), faceted ribbons and striations; bright "
             "edges (secondary-electron yield ∝ 1/cos φ), detector shadow, probe blur, Poisson "
             "shot noise, scan-line noise and JPEG artefacts. All parameters are drawn randomly "
             "from the ranges below (*domain randomisation*), so the network learns the wire "

@@ -1,4 +1,4 @@
-"""Residual U-Net with three task heads, losses and metrics (Keras 3 / TensorFlow).
+"""Residual U-Net with four task heads, losses and metrics (Keras 3 / TensorFlow).
 
 Architecture (default: base_filters=24, depth=4 -> filters 24-48-96-192-384)
 
@@ -18,7 +18,8 @@ Architecture (default: base_filters=24, depth=4 -> filters 24-48-96-192-384)
       Upsample+concat ------------------------------------------------------- ' ResBlock(24)
       |-> 1x1 conv, sigmoid  ->  "mask"         P(pixel belongs to a wire)
       |-> 1x1 conv, sigmoid  ->  "centerline"   P(pixel lies on a wire axis)
-      '-> 1x1 conv, tanh     ->  "orientation"  (cos 2theta, sin 2theta)
+      |-> 1x1 conv, tanh     ->  "orientation"  (cos 2theta, sin 2theta)
+      '-> 1x1 conv, softplus ->  "width"        local wire width (px)
 
 Design choices
 * Residual blocks (He et al. 2016) ease optimisation of the deeper network.
@@ -39,7 +40,7 @@ from keras import layers, ops
 
 from .config import ModelConfig, TrainConfig
 
-OUTPUTS = ("mask", "centerline", "orientation")
+OUTPUTS = ("mask", "centerline", "orientation", "width")
 
 
 # --------------------------------------------------------------------------- building blocks
@@ -89,6 +90,9 @@ def build_unet(cfg: ModelConfig) -> keras.Model:
                                     name="centerline")(x),
         "orientation": layers.Conv2D(2, 1, activation="tanh", dtype="float32",
                                      name="orientation")(x),
+        # local width (px) of the top-most wire; softplus keeps it positive
+        "width": layers.Conv2D(1, 1, activation="softplus", dtype="float32",
+                               bias_initializer=keras.initializers.Constant(8.0), name="width")(x),
     }
     return keras.Model(inputs, outputs, name=f"AuNW_ResUNet_d{cfg.depth}_f{cfg.base_filters}")
 
@@ -136,6 +140,16 @@ def masked_orientation_loss(y_true, y_pred):
     return ops.sum(w * err) / (ops.sum(w) + 1.0)
 
 
+@keras.saving.register_keras_serializable(package="aunw")
+def masked_relative_width_loss(y_true, y_pred):
+    """Mean relative error |w_pred - w| / w on labelled wire pixels; y_true = (w, weight).
+
+    A relative (not absolute) error gives thin and thick wires the same importance.
+    """
+    w, m = y_true[..., :1], y_true[..., 1:2]
+    return ops.sum(m * ops.abs(y_pred - w) / ops.maximum(w, 1.0)) / (ops.sum(m) + 1.0)
+
+
 # --------------------------------------------------------------------------- metrics
 @keras.saving.register_keras_serializable(package="aunw")
 def dice_coef(y_true, y_pred):
@@ -156,15 +170,40 @@ def angle_error_deg(y_true, y_pred):
     return ops.sum(w * d) / (ops.sum(w) + 1.0) * (180.0 / 3.141592653589793)
 
 
+@keras.saving.register_keras_serializable(package="aunw")
+def width_error_pct(y_true, y_pred):
+    """Mean relative width error in % on labelled wire pixels."""
+    return 100.0 * masked_relative_width_loss(y_true, y_pred)
+
+
+def transfer_weights(src: keras.Model, dst: keras.Model) -> int:
+    """Copy weights layer by layer (same name and shapes). Returns the number of layers copied.
+
+    Used to start a new architecture (e.g. with an extra head) from a trained model
+    instead of from random weights (transfer learning).
+    """
+    n = 0
+    for layer in dst.layers:
+        try:
+            old = src.get_layer(layer.name)
+        except ValueError:
+            continue
+        w_old, w_new = old.get_weights(), layer.get_weights()
+        if w_new and len(w_old) == len(w_new) and all(a.shape == b.shape for a, b in zip(w_old, w_new)):
+            layer.set_weights(w_old)
+            n += 1
+    return n
+
+
 def compile_model(model: keras.Model, cfg: TrainConfig) -> keras.Model:
     model.compile(
         optimizer=keras.optimizers.AdamW(learning_rate=cfg.learning_rate,
                                          weight_decay=cfg.weight_decay, clipnorm=1.0),
         loss={"mask": dice_bce_loss, "centerline": dice_bce_loss,
-              "orientation": masked_orientation_loss},
+              "orientation": masked_orientation_loss, "width": masked_relative_width_loss},
         loss_weights=cfg.loss_weights,
         metrics={"mask": [dice_coef], "centerline": [dice_coef],
-                 "orientation": [angle_error_deg]},
+                 "orientation": [angle_error_deg], "width": [width_error_pct]},
         jit_compile=False,
     )
     return model

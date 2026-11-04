@@ -14,6 +14,11 @@ Orientation target
     which is continuous and unique. A third channel holds the per-pixel loss
     weight (1 on single-wire pixels, 0 on background and crossings).
 
+Width target
+    For every wire pixel the width (px) of the top-most wire there. In dense
+    meshes the wire mask is one connected area, so widths cannot be measured
+    from mask edges; a learned width map is not affected by touching wires.
+
 Geometric augmentation must transform the labels consistently:
     horizontal or vertical flip:  theta -> -theta (mod pi)   =>  (c, s) -> (c, -s)
     rotation by 90 deg:           theta -> theta + pi/2      =>  (c, s) -> (-c, -s)
@@ -31,9 +36,9 @@ import tensorflow as tf
 from skimage.morphology import skeletonize
 
 from .config import SyntheticConfig
-from .synthetic import IGNORE_ANGLE, render_sample, wire_table
+from .synthetic import IGNORE_ANGLE, WIDTH_SCALE, render_sample, wire_table
 
-KEYS = ("image", "mask", "centerline", "angle")
+KEYS = ("image", "mask", "centerline", "angle", "width")
 
 
 # --------------------------------------------------------------------------- generation
@@ -81,7 +86,7 @@ def generate_dataset(out_dir: Path, cfg: SyntheticConfig, n_train: int = 1500,
         s = render_sample(rng, cfg, size=test_size)
         cv2.imwrite(str(test_dir / f"test_{i:03d}.png"), s["image"])
         np.savez_compressed(test_dir / f"test_{i:03d}_labels.npz",
-                            **{k: s[k] for k in ("mask", "centerline", "angle", "instance")})
+                            **{k: s[k] for k in ("mask", "centerline", "angle", "width", "instance")})
         (test_dir / f"test_{i:03d}.json").write_text(
             json.dumps(wire_table(s["wires"], test_size), indent=1))
         if progress:
@@ -91,7 +96,10 @@ def generate_dataset(out_dir: Path, cfg: SyntheticConfig, n_train: int = 1500,
 
 def load_split(path: Path) -> dict[str, np.ndarray]:
     with np.load(path) as f:
-        return {k: f[k] for k in KEYS}
+        out = {k: f[k] for k in KEYS if k in f.files}
+    if "width" not in out:                      # datasets made before the width head existed
+        out["width"] = np.zeros_like(out["mask"])
+    return out
 
 
 def list_test_images(data_dir: Path) -> list[Path]:
@@ -111,7 +119,8 @@ def labels_from_mask(mask: np.ndarray) -> dict[str, np.ndarray]:
     m = mask > 0
     cl = cv2.dilate(skeletonize(m).astype(np.uint8), np.ones((3, 3), np.uint8)) & m
     return {"mask": m.astype(np.uint8), "centerline": cl.astype(np.uint8),
-            "angle": np.full(m.shape, IGNORE_ANGLE, np.uint8)}
+            "angle": np.full(m.shape, IGNORE_ANGLE, np.uint8),
+            "width": np.zeros(m.shape, np.uint8)}          # unknown -> excluded from the width loss
 
 
 def tiles_from_annotations(images: list[np.ndarray], masks: list[np.ndarray],
@@ -130,7 +139,7 @@ def tiles_from_annotations(images: list[np.ndarray], masks: list[np.ndarray],
                 if img8[crop].shape != (tile, tile):
                     continue
                 out["image"].append(img8[crop])
-                for k in ("mask", "centerline", "angle"):
+                for k in ("mask", "centerline", "angle", "width"):
                     out[k].append(lab[k][crop])
     if not out["image"]:
         raise ValueError(f"Annotated images must be at least {tile}x{tile} px.")
@@ -138,21 +147,23 @@ def tiles_from_annotations(images: list[np.ndarray], masks: list[np.ndarray],
 
 
 # --------------------------------------------------------------------------- tf.data
-def _to_targets(image, mask, centerline, angle):
+def _to_targets(image, mask, centerline, angle, width):
     """uint8 arrays -> (network input, dict of targets)."""
     x = tf.cast(image, tf.float32)[..., None] / 255.0
     valid = tf.cast(angle < 180, tf.float32)
     theta = tf.cast(angle, tf.float32) * (np.pi / 180.0)
     orient = tf.stack([tf.cos(2 * theta) * valid, tf.sin(2 * theta) * valid, valid], -1)
+    w = tf.cast(width, tf.float32) / WIDTH_SCALE                 # px; 0 = unknown/background
     y = {"mask": tf.cast(mask, tf.float32)[..., None],
          "centerline": tf.cast(centerline, tf.float32)[..., None],
-         "orientation": orient}
+         "orientation": orient,
+         "width": tf.stack([w, tf.cast(w > 0, tf.float32)], -1)}  # (value, loss weight)
     return x, y
 
 
 def _augment(x, y):
     """Random flips/90-degree rotations (label-consistent) + intensity jitter."""
-    stacked = tf.concat([x, y["mask"], y["centerline"], y["orientation"]], -1)
+    stacked = tf.concat([x, y["mask"], y["centerline"], y["orientation"], y["width"]], -1)
     sign_s = tf.constant(1.0)
     if tf.random.uniform(()) < 0.5:
         stacked, sign_s = tf.image.flip_left_right(stacked), -sign_s
@@ -162,14 +173,15 @@ def _augment(x, y):
     stacked = tf.image.rot90(stacked, k)
     sign_r = 1.0 - 2.0 * tf.cast(k % 2, tf.float32)     # -1 for odd k (90/270 deg)
 
-    x, m, c, o = stacked[..., :1], stacked[..., 1:2], stacked[..., 2:3], stacked[..., 3:]
+    x, m, c, o, wd = (stacked[..., :1], stacked[..., 1:2], stacked[..., 2:3], stacked[..., 3:6],
+                      stacked[..., 6:])                 # the width is invariant to flips/rotations
     o = tf.stack([o[..., 0] * sign_r, o[..., 1] * sign_r * sign_s, o[..., 2]], -1)
 
     # photometric jitter: contrast, brightness, gamma, additive noise
     x = (x - 0.5) * tf.random.uniform((), 0.75, 1.3) + 0.5 + tf.random.uniform((), -0.1, 0.1)
     x = tf.clip_by_value(x, 0.0, 1.0) ** tf.random.uniform((), 0.75, 1.35)
     x = x + tf.random.normal(tf.shape(x), stddev=tf.random.uniform((), 0.0, 0.04))
-    return tf.clip_by_value(x, 0.0, 1.0), {"mask": m, "centerline": c, "orientation": o}
+    return tf.clip_by_value(x, 0.0, 1.0), {"mask": m, "centerline": c, "orientation": o, "width": wd}
 
 
 def make_dataset(arrays: dict[str, np.ndarray], batch_size: int, training: bool,

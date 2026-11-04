@@ -26,11 +26,14 @@ Pipeline (deterministic, few parameters)
 6.  Length.     Sum of branch lengths (polyline resampled every 4 px, which removes
                 the pixel-staircase bias) + gaps bridged inside junctions + w/2 per
                 end (the centreline stops at the centre of the hemispherical cap).
-7.  Width.      Along the wire, away from junctions and tips, the mask probability
-                p(t) is sampled on the local normal; the two sub-pixel 0.5 crossings
-                give w_i = t_right - t_left. Wire width = median(w_i).
-8.  End types.  "tip" (free end), "t_end" (ends on another wire), "unresolved"
-                (unpaired in an ambiguous junction) or "border". A wire is
+7.  Width.      Primary: median of the network's width map along the wire, away
+                from junctions (works in dense meshes where wires touch). Cross-
+                check: the mask probability p(t) is sampled on the local normal;
+                the two sub-pixel 0.5 crossings give w_i = t_right - t_left, and
+                width_profile = median(w_i) (exact for isolated wires).
+8.  End types.  "tip" (free end whose mask ends too), "t_end" (ends on another
+                wire), "unresolved" (unpaired in an ambiguous junction, or the
+                centre-line stops although the mask continues) or "border". A wire is
                 *complete* if both ends are free tips and it does not touch the
                 border: only then is its length fully observed.
 9.  Reliability. The areal coverage of the mask decides how many wire ends are
@@ -202,7 +205,8 @@ def tangents(path: np.ndarray, k: int = 3) -> np.ndarray:
 
 
 # =========================================================================== stages
-def build_graph(prob: np.ndarray, centerline: np.ndarray, cfg: AnalysisConfig) -> Graph | None:
+def build_graph(prob: np.ndarray, centerline: np.ndarray, cfg: AnalysisConfig,
+                width_map: np.ndarray | None = None) -> Graph | None:
     """Stages 1-3: skeleton, junction zones, ordered branches."""
     fg = prob > cfg.mask_threshold
     cl = remove_small_objects((centerline > cfg.centerline_threshold) & fg, max_size=8)
@@ -210,9 +214,14 @@ def build_graph(prob: np.ndarray, centerline: np.ndarray, cfg: AnalysisConfig) -
     if not skel.any():
         return None
 
-    # global width estimate from the distance transform (w ~ 2d - 1 on the axis)
+    # Global width scale: from the network's width map if available. The fallback,
+    # the distance transform of the mask (w ~ 2d - 1 on the axis), is only valid for
+    # sparse meshes: in a dense mesh the mask is one connected area.
     edt = ndi.distance_transform_edt(fg)
-    w_glob = float(max(2.0, np.median(2 * edt[skel] - 1)))
+    if width_map is not None:
+        w_glob = float(max(2.0, np.median(width_map[skel])))
+    else:
+        w_glob = float(max(2.0, np.median(2 * edt[skel] - 1)))
     r_j = int(np.ceil(0.5 * w_glob)) + 1
 
     cn, nb = crossing_number(skel)
@@ -344,6 +353,18 @@ def pair_branches(g: Graph, prob: np.ndarray, orient: np.ndarray | None, cfg: An
     return parent, linked, gap_len, unpaired_at
 
 
+def head_width(paths: list[np.ndarray], width_map: np.ndarray, near_junction: np.ndarray) -> float:
+    """Median of the network's width map along the wire, away from junctions.
+
+    Away from crossings the top-most wire at a centre-line pixel is the wire itself,
+    so the width map there is this wire's width - even if neighbours touch it.
+    """
+    allp = np.concatenate(paths)
+    keep = ~near_junction[allp[:, 0], allp[:, 1]]
+    sel = allp[keep] if keep.sum() >= 3 else allp
+    return float(np.median(width_map[sel[:, 0], sel[:, 1]]))
+
+
 def measure_width(paths: list[np.ndarray], prob: np.ndarray, near_junction: np.ndarray,
                   w_glob: float, edt: np.ndarray) -> tuple[float, int]:
     """Stage 7: median sub-pixel profile width (fallback: distance transform)."""
@@ -367,6 +388,22 @@ def measure_width(paths: list[np.ndarray], prob: np.ndarray, near_junction: np.n
     return float(max(1.0, np.median(2 * edt[allp[:, 0], allp[:, 1]] - 1))), 0
 
 
+def _mask_continues(path: np.ndarray, at_end: bool, prob: np.ndarray, width: float,
+                    orient: np.ndarray | None, m: int) -> bool:
+    """Does the wire mask continue beyond this free centre-line end?
+
+    A real wire end also ends in the mask: just beyond the hemispherical cap
+    (w/2 + 3 px along the wire direction) the mask must be background. If it is
+    still wire, the centre-line merely faded out (e.g. under a crossing wire in a
+    dense mesh), and the end is not a real tip.
+    """
+    u = end_direction(path, at_end, min(m, len(path)), orient)          # (dx, dy), outward
+    tip = path[-1] if at_end else path[0]
+    probe = tip[::-1] + u * (width / 2 + 3)                              # (x, y)
+    val = ndi.map_coordinates(prob, [[probe[1]], [probe[0]]], order=1, mode="constant", cval=0.0)
+    return bool(val[0] > 0.5)
+
+
 # =========================================================================== main entry
 def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list[dict], dict]:
     """Reconstruct and measure individual wires.
@@ -377,7 +414,8 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
     its `path` (list of (y, x) arrays) for overlays.
     """
     prob = maps["mask"].astype(np.float32)
-    g = build_graph(prob, maps["centerline"], cfg)
+    width_map = maps.get("width")
+    g = build_graph(prob, maps["centerline"], cfg, width_map)
     if g is None:
         return [], {"crossing_resolution": np.nan, "width_px_global": np.nan, "coverage": 0.0,
                     "stereological_mean_length_px": np.nan, "reliability": "no wires",
@@ -389,10 +427,14 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
         wires_of.setdefault(_find(parent, bi), []).append(bi)
 
     near_junction = ndi.binary_dilation(g.jzone, structure=disk(max(1, int(np.ceil(g.width_px)))))
+    orient = maps.get("orientation")
+    m_dir = max(8, int(round(3.0 * g.width_px)))
     results = []
     for members in wires_of.values():
         paths = [g.branches[i].path for i in members]
-        width, n_samples = measure_width(paths, prob, near_junction, g.width_px, g.edt)
+        width_profile, n_samples = measure_width(paths, prob, near_junction, g.width_px, g.edt)
+        width = (head_width(paths, width_map, near_junction) if width_map is not None
+                 else width_profile)
         length = sum(g.branches[i].length for i in members) + gap_len[members].sum()
 
         ends = {"tip": 0, "t_end": 0, "unresolved": 0, "border": 0}
@@ -406,8 +448,12 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
                     length += min(np.linalg.norm(g.jcentre[j] - tip), g.r_j + width)
                     kind = "t_end" if unpaired_at[j] == 1 else "unresolved"
                     ends["border" if g.j_at_border[j] else kind] += 1
+                elif near_border(tip, prob.shape)[0]:
+                    ends["border"] += 1
+                elif _mask_continues(g.branches[i].path, bool(side), prob, width, orient, m_dir):
+                    ends["unresolved"] += 1     # centre-line stops but the wire does not
                 else:
-                    ends["border" if near_border(tip, prob.shape)[0] else "tip"] += 1
+                    ends["tip"] += 1
                 length += width / 2                         # hemispherical cap
 
         if length < cfg.min_length_px or length / max(width, 1e-6) < cfg.min_aspect_ratio:
@@ -422,6 +468,7 @@ def analyze_maps(maps: dict[str, np.ndarray], cfg: AnalysisConfig) -> tuple[list
         extent = allp.max(0) - allp.min(0) + width          # bounding box (dy, dx) incl. caps
         results.append({
             "length_px": float(length), "width_px": width,
+            "width_profile_px": width_profile,
             "aspect_ratio": float(length / width), "angle_deg": angle,
             "complete": ends["tip"] == 2 and not border, "touches_border": border,
             "end_tips": ends["tip"], "end_t": ends["t_end"], "end_unresolved": ends["unresolved"],

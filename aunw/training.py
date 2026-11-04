@@ -33,7 +33,7 @@ import pandas as pd
 
 from .config import ROOT, ModelConfig, TrainConfig, save_json
 from .dataset import load_split, make_dataset, mixed_dataset
-from .model import build_unet, compile_model, enable_mixed_precision, load_model
+from .model import build_unet, compile_model, enable_mixed_precision, load_model, transfer_weights
 
 
 class TrainingMonitor:
@@ -182,7 +182,10 @@ def train(model_dir: Path, data_dir: Path, model_cfg: ModelConfig, train_cfg: Tr
     train_ds = make_dataset(train_arr, train_cfg.batch_size, True, train_cfg.augment, train_cfg.seed)
     val_ds = make_dataset(val_arr, train_cfg.batch_size, False)
 
-    model = load_model(init_from) if init_from else build_unet(model_cfg)
+    model = build_unet(model_cfg)
+    if init_from:                                   # transfer learning from an existing model
+        n = transfer_weights(load_model(init_from), model)
+        print(f"initialised {n} layers from {init_from}", flush=True)
     compile_model(model, train_cfg)
     if monitor is not None:
         monitor.update(force=True, status="running", started=time.time(),
@@ -238,8 +241,9 @@ def start_process(args: list[str], model_dir: Path) -> subprocess.Popen:
     (model_dir / "STOP").unlink(missing_ok=True)
     TrainingMonitor(model_dir).update(force=True, status="starting", message="starting …")
     log = open(model_dir / "train.log", "w")
+    no_window = 0x08000000 if sys.platform == "win32" else 0   # no console window on Windows
     return subprocess.Popen([sys.executable, "-m", "aunw.cli", *args], stdout=log,
-                            stderr=subprocess.STDOUT, cwd=str(ROOT))
+                            stderr=subprocess.STDOUT, cwd=str(ROOT), creationflags=no_window)
 
 
 def request_stop(model_dir: Path) -> None:

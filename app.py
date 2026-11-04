@@ -10,8 +10,11 @@ from __future__ import annotations
 
 import streamlit as st
 
-st.set_page_config(page_title="AuNW Analysis", page_icon="🔬", layout="wide",
-                   initial_sidebar_state="expanded")
+from pathlib import Path                                     # noqa: E402
+
+_ICON = Path(__file__).parent / "assets" / "aunw.png"
+st.set_page_config(page_title="AuNW Analysis", page_icon=str(_ICON) if _ICON.exists() else "🔬",
+                   layout="wide", initial_sidebar_state="expanded")
 
 from ui import common                                       # noqa: E402
 from ui.pages import (analyze, finetune, images, network, overview, results,  # noqa: E402

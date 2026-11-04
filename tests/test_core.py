@@ -22,6 +22,7 @@ def render_maps(wires: list[Wire], size: int = 256) -> dict:
     """Perfect network output for given wires (used to test the measurement alone)."""
     yy, xx = np.mgrid[0:size, 0:size].astype(float)
     mask = np.zeros((size, size), np.float32)
+    width = np.zeros((size, size), np.float32)
     cl = np.zeros((size, size), np.float32)
     c2 = np.zeros((size, size), np.float32)
     s2 = np.zeros((size, size), np.float32)
@@ -30,13 +31,14 @@ def render_maps(wires: list[Wire], size: int = 256) -> dict:
         d, th = w.distance_field(xx, yy)
         inside = d <= w.width / 2
         mask = np.maximum(mask, np.clip(w.width / 2 - d + 0.5, 0, 1))
+        width[inside] = w.width                              # top-most wire wins
         cl[d <= 1.0] = 1
         count += inside
         c2 += inside * np.cos(2 * th)
         s2 += inside * np.sin(2 * th)
     single = count == 1
     return {"mask": mask, "centerline": cl * (mask > 0.5),
-            "orientation": np.stack([c2 * single, s2 * single], -1)}
+            "orientation": np.stack([c2 * single, s2 * single], -1), "width": width}
 
 
 def straight(x0, y0, angle_deg, length, width) -> Wire:
@@ -73,7 +75,8 @@ def test_augmentation_keeps_orientation_consistent(seed):
     maps = render_maps([w], 256)
     ang = np.where(maps["mask"] > 0.5, 30, 255).astype(np.uint8)
     x, y = _to_targets(np.zeros((256, 256), np.uint8), (maps["mask"] > 0.5).astype(np.uint8),
-                       maps["centerline"].astype(np.uint8), ang)
+                       maps["centerline"].astype(np.uint8), ang,
+                       np.where(maps["mask"] > 0.5, 32, 0).astype(np.uint8))
     x, y = _augment(x, y)
     m = y["mask"].numpy()[..., 0] > 0.5
     yy, xx = np.nonzero(m)
@@ -119,6 +122,25 @@ def test_crossing_wires_are_separated():
     assert len(wires) == 2
     assert all(abs(x["length_px"] - 200) / 200 < 0.05 for x in wires)
     assert info["crossing_resolution"] == 1.0
+
+
+def test_width_map_handles_touching_wires():
+    """Two parallel wires touching each other: the mask is one band twice as wide.
+
+    The edge-profile width fails here; the width map (what the network predicts)
+    still yields the individual width.
+    """
+    a = straight(40, 120, 0, 170, 10)
+    b = straight(40, 130, 0, 170, 10)                 # 10 px apart = touching
+    wires, _ = analyze_maps(render_maps([a, b]), AnalysisConfig())
+    assert wires and all(abs(w["width_px"] - 10) / 10 < 0.05 for w in wires)
+
+
+def test_dense_style_labels():
+    s = render_sample(np.random.default_rng(1), SyntheticConfig(), style="dense3d")
+    w = s["width"][s["mask"] > 0] / 4
+    assert s["mask"].mean() > 0.2 and (w >= 2).all()
+    assert ((s["width"] > 0) == (s["mask"] > 0)).all()
 
 
 def test_wire_cut_by_border_is_flagged():

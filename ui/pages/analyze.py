@@ -91,6 +91,11 @@ def render() -> None:
         st.error(f"✗ Very dense mesh – most wire ends are hidden under other wires; length "
                  f"statistics are not reliable (width still is). {msg}")
 
+    if len(df) and df["touches_border"].mean() > 0.6:
+        st.info(f"ℹ️ {df['touches_border'].mean():.0%} of the wires leave the field of view, so their "
+                "length cannot be measured in this image (the width can). For length statistics "
+                "use images at lower magnification in which whole wires are visible – and keep "
+                "the high-magnification images for the width.")
     tabs = st.tabs(["Overlay", "Network output", "Wire table"])
     with tabs[0]:
         ids = st.toggle("Show wire IDs", True)
