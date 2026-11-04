@@ -1,0 +1,15 @@
+# Privacy: no usage statistics, server only reachable from this computer.
+[browser]
+gatherUsageStats = false
+
+[server]
+address = "localhost"
+maxUploadSize = 2000
+headless = true
+
+[theme]
+base = "light"
+primaryColor = "#1a56c4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#eef3fb"
+textColor = "#0b0b0b"
