@@ -12,6 +12,12 @@ The full scientific explanation of the design, with the mathematics, is in
 
 ## Installation
 
+**Windows (easiest):** install Python 3.12 from <https://www.python.org/downloads/>
+(tick *Add python.exe to PATH*), then double-click **`install_windows.bat`** once
+and afterwards **`start_windows.bat`** to start the program.
+
+**Manual installation (all systems):**
+
 ```bash
 python -m venv .venv
 ```
