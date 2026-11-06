@@ -253,3 +253,41 @@ def test_training_run_saves_model(tmp_path):
     assert (tmp_path / "model" / "model.keras").exists()
     assert (tmp_path / "model" / "config.json").exists()
     assert mon.status == "finished" and len(mon.history) == 1 and mon.preview
+
+
+# --------------------------------------------------------------------------- per-wire report
+def test_per_wire_report_and_exports():
+    import io as _io
+    import zipfile
+
+    import openpyxl
+    import pandas as pd
+
+    from aunw import report
+    from aunw.inference import ImageResult
+
+    a, b = straight(30, 60, 0, 150, 8), straight(60, 30, 80, 150, 8)
+    maps = render_maps([a, b])
+    wires, info = analyze_maps(maps, AnalysisConfig())
+    df = pd.DataFrame([{k: v for k, v in w.items() if k != "path"} for w in wires])
+    df["length_nm"], df["width_nm"] = df.length_px * 2.0, df.width_px * 2.0
+    df.insert(0, "image", "test.png")
+    info["paths"] = [w["path"] for w in wires]
+    r = ImageResult("test.png", df, maps, 1.0, 2.0, (256, 256), info)
+
+    t = report.wire_table(r)
+    assert list(t.wire_id) == list(df.wire_id)
+    for col in ("status", "length_nm", "width_nm", "start_x_px", "end_y_px", "start_x_um"):
+        assert col in t
+    # wire a: centre-line from x = 30 to 172 at y = 60, tips (caps of radius 4) at x = 26 and 176
+    row = t.loc[(t.start_y_px - 60).abs() < 2].iloc[0]
+    assert abs(row.start_x_px - 26) < 2 and abs(row.end_x_px - 176) < 2
+    assert abs(row.start_x_um - row.start_x_px * 2 / 1000) < 1e-9
+    assert len(report.path_points(r)) > 200
+
+    img = maps["mask"]
+    wb = openpyxl.load_workbook(_io.BytesIO(report.image_excel(img, r)))
+    assert wb.sheetnames == ["Wires", "Map (values)", "Map (IDs)", "Path points", "Info"]
+    assert wb["Wires"].max_row == len(t) + 1 and len(wb["Map (values)"]._images) == 1
+    names = zipfile.ZipFile(_io.BytesIO(report.image_zip(img, r))).namelist()
+    assert {"test/test_wires.csv", "test/test_map_values.png", "test/test_map_ids.pdf"} <= set(names)

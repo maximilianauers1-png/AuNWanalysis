@@ -41,8 +41,13 @@ def sidebar() -> str:
         st.caption("Length & width of gold nanowires in SEM images")
         st.markdown("---")
         labels = {k: (f"{lbl}  ✓" if s and status.get(s) else lbl) for k, lbl, _, s in STEPS}
-        page = st.radio("Workflow", [k for k, *_ in STEPS], format_func=labels.get,
-                        key="page", label_visibility="collapsed")
+        # The ✓ markers change the labels, and Streamlit re-creates a widget whose labels
+        # change. The current page is therefore kept in our own state and passed as index.
+        keys = [k for k, *_ in STEPS]
+        current = st.session_state.setdefault("current_page", "overview")
+        page = st.radio("Workflow", keys, index=keys.index(current), format_func=labels.get,
+                        label_visibility="collapsed")
+        st.session_state["current_page"] = page
         st.markdown("---")
         models = common.available_models()
         if models:

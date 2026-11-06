@@ -458,9 +458,15 @@ On Windows, \code{install\_windows.bat} installs everything once and creates a d
 \begin{description}[leftmargin=1.2em,itemsep=1pt]
 \item[Step 5] Upload TIFF/JPEG/PNG files, or read a whole folder. Check the cropped information bar and the calibration (metadata, nm/px or scale bar). The calibration of the first image can be applied to all.
 \item[Step 6] Run the analysis. The overlay colours complete wires blue, wires ending in a crossing orange, and wires cut by the border green. Tabs show the raw network output and the table of all wires.
+\item[Per-wire results] The tab \emph{Measured wires} of step 6 shows the micrograph with every wire numbered and labelled with its length and width on a coordinate grid (Fig.~\ref{fig:wiremap}), together with the wire table. Selecting rows highlights those wires on the map. Export buttons provide the map (PNG/PDF; with values or IDs only), the wire table (CSV), all traced centre-line points (CSV), an Excel workbook with the table, both maps embedded and the path points, and a ZIP of everything, for the current image or for all images. Coordinates follow the ImageJ convention (origin top-left, $y$ downwards). Start and end are the wire tips, i.e.\ the centre-line ends extended by $w/2$. For incomplete wires the visible length is a lower bound and is marked ``L\,$\ge$''.
 \item[Step 7] Choose the unit and the edge correction. The page shows the summary table, histograms with normal and log-normal fits, length vs.\ width, per-image box plots and CDFs. Downloads: CSV, Excel (sheets \emph{Summary}, \emph{Wires}, \emph{Per image}, \emph{Settings}), each figure as PNG (300\,dpi), SVG or PDF, and a ZIP of everything, including overlays and the exact analysis settings for reproducibility.
 \end{description}
 Headless use, for example training on a GPU server, is possible with \code{python -m aunw.cli} and the sub-commands \code{generate}, \code{train}, \code{finetune}, \code{evaluate} and \code{analyze}. All processing is local: the server listens only on \code{localhost} and usage statistics are disabled.
+
+\begin{figure}[H]\centering
+\includegraphics[width=\linewidth]{figures/wire_map_example.jpg}
+\caption{Per-wire map exported from step 6 for a real micrograph: every wire numbered, with width W and (visible) length L; colours as in Fig.~\ref{fig:real}.}\label{fig:wiremap}
+\end{figure}
 
 \subsection*{Screenshots}
 \begin{figure}[H]\centering

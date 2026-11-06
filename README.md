@@ -69,6 +69,31 @@ included, so you can start analysing images in step 5 straight away. Training
 started from the GUI runs as a separate process (`python -m aunw.cli train …`),
 so it continues even if the browser is closed.
 
+## Results for every single wire
+
+In **step 6 (Analyse)**, the tab *Measured wires* shows the micrograph with
+**every wire numbered**, drawn in colour and labelled with its **length and width**,
+on a µm coordinate grid. Below it is the wire table. Select rows there to
+highlight those wires on the map.
+
+Export buttons in the same place:
+
+| Button | Content |
+|---|---|
+| Map (PNG / PDF) | labelled map (with values, or IDs only) |
+| Wires (CSV) | one row per wire: ID, status, length, width, aspect ratio, angle, start/end tip and centre coordinates in px and µm |
+| Path points (CSV) | every traced centre-line point of every wire |
+| Excel | sheets *Wires*, *Map (values)* and *Map (IDs)* (embedded images), *Path points*, *Info* |
+| ZIP | all of the above for this image |
+| All wires (CSV) / ZIP of all images | the same for every analysed image |
+
+Coordinates have their origin at the top-left corner, with x to the right and y
+downwards, as in ImageJ. For wires that end in a crossing or leave the image,
+only the visible part is measured; their length is a lower bound, shown as
+"L ≥ …" on the map and as `length_type = visible (lower bound)` in the table.
+
+![wire map](docs/figures/wire_map_example.jpg)
+
 ## Accuracy
 
 The shipped network (`models/aunw_dense_f16`) was trained on synthetic images of
