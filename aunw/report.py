@@ -20,7 +20,12 @@ only its visible part can be measured. Its length is reported as a lower bound
 from __future__ import annotations
 
 import io
+import os
+import subprocess
+import sys
 import zipfile
+from datetime import datetime
+from pathlib import Path
 
 import numpy as np
 import pandas as pd
@@ -228,36 +233,76 @@ def image_excel(image: np.ndarray, result) -> bytes:
     return buf.getvalue()
 
 
-def image_zip(image: np.ndarray, result) -> bytes:
-    """Everything for one image: tables (CSV + Excel) and maps (PNG + PDF)."""
+def files_for_image(image: np.ndarray, result) -> dict[str, bytes]:
+    """All per-wire result files of one image: {file name: content}."""
     stem = result.name.rsplit(".", 1)[0]
+    files = {f"{stem}_wires.csv": wire_table(result).to_csv(index=False).encode("utf-8-sig"),
+             f"{stem}_path_points.csv": path_points(result).to_csv(index=False).encode("utf-8-sig"),
+             f"{stem}_wires.xlsx": image_excel(image, result)}
+    for values, tag in ((True, "map_values"), (False, "map_ids")):
+        fig = wire_map(image, result, values)
+        files[f"{stem}_{tag}.png"] = figure_bytes(fig, "png")
+        files[f"{stem}_{tag}.pdf"] = figure_bytes(fig, "pdf")
+    return files
+
+
+def all_files(results, images: dict[str, np.ndarray]) -> dict[str, bytes]:
+    """Files for all images, one sub-folder per image, plus one combined table."""
+    out, tables = {}, []
+    for r in results:
+        if r.name not in images:
+            continue
+        stem = r.name.rsplit(".", 1)[0]
+        for fname, data in files_for_image(images[r.name], r).items():
+            out[f"{stem}/{fname}"] = data
+        tables.append(wire_table(r))
+    if tables:
+        out["all_wires.csv"] = pd.concat(tables, ignore_index=True).to_csv(index=False).encode("utf-8-sig")
+    return out
+
+
+def _zip(files: dict[str, bytes]) -> bytes:
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        _write_image(z, f"{stem}/", stem, image, result)
+        for name, data in files.items():
+            z.writestr(name, data)
     return buf.getvalue()
 
 
-def _write_image(z: zipfile.ZipFile, folder: str, stem: str, image, result) -> None:
-    z.writestr(f"{folder}{stem}_wires.csv", wire_table(result).to_csv(index=False))
-    z.writestr(f"{folder}{stem}_path_points.csv", path_points(result).to_csv(index=False))
-    z.writestr(f"{folder}{stem}_wires.xlsx", image_excel(image, result))
-    for values, tag in ((True, "map_values"), (False, "map_ids")):
-        fig = wire_map(image, result, values)
-        z.writestr(f"{folder}{stem}_{tag}.png", figure_bytes(fig, "png"))
-        z.writestr(f"{folder}{stem}_{tag}.pdf", figure_bytes(fig, "pdf"))
+def image_zip(image: np.ndarray, result) -> bytes:
+    """Everything for one image: tables (CSV + Excel) and maps (PNG + PDF)."""
+    stem = result.name.rsplit(".", 1)[0]
+    return _zip({f"{stem}/{k}": v for k, v in files_for_image(image, result).items()})
 
 
 def all_images_zip(results, images: dict[str, np.ndarray]) -> bytes:
     """Per-wire reports for all images (one folder each) plus one combined table."""
-    buf = io.BytesIO()
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        tables = []
-        for r in results:
-            if r.name not in images:
-                continue
-            stem = r.name.rsplit(".", 1)[0]
-            _write_image(z, f"{stem}/", stem, images[r.name], r)
-            tables.append(wire_table(r))
-        if tables:
-            z.writestr("all_wires.csv", pd.concat(tables, ignore_index=True).to_csv(index=False))
-    return buf.getvalue()
+    return _zip(all_files(results, images))
+
+
+# --------------------------------------------------------------------------- saving to disk
+def default_save_folder() -> Path:
+    """Documents/AuNW Analysis (falls back to the home folder if there is no Documents)."""
+    docs = Path.home() / "Documents"
+    return (docs if docs.exists() else Path.home()) / "AuNW Analysis"
+
+
+def save_files(files: dict[str, bytes], folder: Path) -> Path:
+    """Write files into a new time-stamped sub-folder of `folder`; returns that sub-folder."""
+    target = Path(folder) / datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    for name, data in files.items():
+        path = target / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(data)
+    return target
+
+
+def open_folder(folder: Path) -> None:
+    """Open a folder in the file manager (Explorer, Finder, ...)."""
+    folder = str(folder)
+    if sys.platform == "win32":
+        os.startfile(folder)                                   # noqa: S606 - local folder
+    elif sys.platform == "darwin":
+        subprocess.Popen(["open", folder])
+    else:
+        subprocess.Popen(["xdg-open", folder])

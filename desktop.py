@@ -89,6 +89,10 @@ def open_webview(url: str) -> bool:
     except ImportError:
         return False
     try:
+        # pywebview ignores file downloads unless this is switched on; with it, the
+        # download buttons save to the Downloads folder (or ask where to save).
+        if hasattr(webview, "settings"):
+            webview.settings["ALLOW_DOWNLOADS"] = True
         webview.create_window(TITLE, url, width=1480, height=940, min_size=(1000, 700))
         webview.start(icon=str(ICON)) if ICON.exists() else webview.start()
         return True

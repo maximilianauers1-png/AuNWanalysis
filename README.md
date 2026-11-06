@@ -76,7 +76,12 @@ In **step 6 (Analyse)**, the tab *Measured wires* shows the micrograph with
 on a µm coordinate grid. Below it is the wire table. Select rows there to
 highlight those wires on the map.
 
-Export buttons in the same place:
+**Saving:** the button **💾 Save this image** (or **Save all images**) writes all
+result files into `Documents\AuNW Analysis\<date_time>\`. The folder can be changed
+in the field above the buttons, and **📂 Open folder** opens it. Step 7 has the same
+**💾 Save** button for the complete set: statistics, figures and per-wire results.
+
+Individual files can also be downloaded (they go to your Downloads folder):
 
 | Button | Content |
 |---|---|

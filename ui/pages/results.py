@@ -1,5 +1,11 @@
 """Step 7: statistics, figures and export."""
+import io
+import zipfile
+from pathlib import Path
+
 import streamlit as st
+
+from aunw import report
 
 from aunw.export import (export_bundle, frames_of, per_image_table, standard_figures, to_excel,
                          wires_table)
@@ -64,5 +70,21 @@ def render() -> None:
     if "zip" in st.session_state:
         c[3].download_button("⬇ ZIP (tables, figures, overlays)", st.session_state["zip"],
                              "aunw_results.zip", "application/zip")
+    st.markdown("**Save everything to a folder** (statistics, figures, Excel workbook, per-wire maps)")
+    s = st.columns([3, 1, 1])
+    folder = s[0].text_input("Save folder", str(st.session_state.get("save_folder",
+                                                                   report.default_save_folder())),
+                             label_visibility="collapsed")
+    st.session_state["save_folder"] = folder
+    if s[1].button("💾 Save", type="primary"):
+        with st.spinner("Writing statistics, figures and per-wire maps …"):
+            bundle = zipfile.ZipFile(io.BytesIO(export_bundle(results, cfg, unit, images, model)))
+            files = {f"statistics/{n}": bundle.read(n) for n in bundle.namelist()}
+            files.update({f"per_wire/{k}": v for k, v in report.all_files(results, images).items()})
+            st.session_state["last_saved"] = str(report.save_files(files, Path(folder)))
+    if st.session_state.get("last_saved"):
+        st.success(f"Saved to **{st.session_state['last_saved']}**")
+        if s[2].button("📂 Open folder"):
+            report.open_folder(Path(st.session_state["last_saved"]))
     with st.expander("Per-image overview"):
         st.dataframe(per_image_table(results), hide_index=True)

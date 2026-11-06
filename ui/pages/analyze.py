@@ -1,7 +1,7 @@
 """Step 6: run the analysis and inspect individual wires."""
 import io
+from pathlib import Path
 
-import pandas as pd
 import numpy as np
 import streamlit as st
 from PIL import Image
@@ -62,46 +62,61 @@ def _measured_wires(name: str, r, images: dict) -> None:
     st.dataframe(table[show_cols].round(3), hide_index=True, height=320, on_select="rerun",
                  selection_mode="multi-row", key=f"wiresel_{name}")
 
-    st.markdown("**Export this image**")
-    e = st.columns(6)
-    e[0].download_button("⬇ Map (PNG)", png, f"{stem}_map_{'values' if values else 'ids'}.png",
-                         "image/png", key=f"png_{name}")
-    e[1].download_button("⬇ Map (PDF)", figure_bytes(fig, "pdf"), f"{stem}_map.pdf",
-                         "application/pdf", key=f"pdf_{name}")
-    e[2].download_button("⬇ Wires (CSV)", table.to_csv(index=False), f"{stem}_wires.csv",
-                         "text/csv", key=f"csv_{name}")
-    e[3].download_button("⬇ Path points (CSV)", report.path_points(r).to_csv(index=False),
-                         f"{stem}_path_points.csv", "text/csv", key=f"pts_{name}",
-                         help="Every traced centre-line point of every wire.")
-    cache = st.session_state.setdefault("export_cache", {})
-    if e[4].button("Prepare Excel", key=f"prepx_{name}"):
-        with st.spinner("Building workbook with maps …"):
-            cache[("xlsx", name)] = report.image_excel(image, r)
-    if ("xlsx", name) in cache:
-        e[4].download_button("⬇ Excel (table + map)", cache[("xlsx", name)], f"{stem}_wires.xlsx",
-                             "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                             key=f"xlsx_{name}")
-    if e[5].button("Prepare ZIP", key=f"prepz_{name}"):
-        with st.spinner("Building ZIP (tables, Excel, maps as PNG + PDF) …"):
-            cache[("zip", name)] = report.image_zip(image, r)
-    if ("zip", name) in cache:
-        e[5].download_button("⬇ ZIP (everything)", cache[("zip", name)], f"{stem}_wires.zip",
-                             "application/zip", key=f"zip_{name}")
+    _save_section(name, image, r, images)
 
+    with st.expander("Download individual files (browser downloads go to your Downloads folder)"):
+        e = st.columns(6)
+        e[0].download_button("⬇ Map (PNG)", png, f"{stem}_map_{'values' if values else 'ids'}.png",
+                             "image/png", key=f"png_{name}")
+        e[1].download_button("⬇ Map (PDF)", figure_bytes(fig, "pdf"), f"{stem}_map.pdf",
+                             "application/pdf", key=f"pdf_{name}")
+        e[2].download_button("⬇ Wires (CSV)", table.to_csv(index=False).encode("utf-8-sig"),
+                             f"{stem}_wires.csv", "text/csv", key=f"csv_{name}")
+        e[3].download_button("⬇ Path points (CSV)",
+                             report.path_points(r).to_csv(index=False).encode("utf-8-sig"),
+                             f"{stem}_path_points.csv", "text/csv", key=f"pts_{name}")
+        cache = st.session_state.setdefault("export_cache", {})
+        if e[4].button("Prepare Excel", key=f"prepx_{name}"):
+            with st.spinner("Building workbook with maps …"):
+                cache[("xlsx", name)] = report.image_excel(image, r)
+        if ("xlsx", name) in cache:
+            e[4].download_button("⬇ Excel", cache[("xlsx", name)], f"{stem}_wires.xlsx",
+                                 "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                                 key=f"xlsx_{name}")
+        if e[5].button("Prepare ZIP", key=f"prepz_{name}"):
+            with st.spinner("Building ZIP …"):
+                cache[("zip", name)] = report.image_zip(image, r)
+        if ("zip", name) in cache:
+            e[5].download_button("⬇ ZIP", cache[("zip", name)], f"{stem}_wires.zip",
+                                 "application/zip", key=f"zip_{name}")
+
+
+def _save_section(name: str, image, r, images: dict) -> None:
+    """Save the result files straight into a folder on this computer."""
+    st.markdown("**Save results** – tables (CSV + Excel with the maps inside) and maps (PNG + PDF)")
+    folder = st.text_input("Save folder", str(st.session_state.get("save_folder",
+                                                                   report.default_save_folder())),
+                           help="Each save creates a new sub-folder named with date and time.")
+    st.session_state["save_folder"] = folder
     results = st.session_state["results"]
-    if len(results) > 1:
-        st.markdown(f"**Export all {len(results)} analysed images**")
-        a = st.columns([1, 1, 3])
-        all_tables = [report.wire_table(x) for x in results.values()]
-        a[0].download_button("⬇ All wires (CSV)", pd.concat(all_tables).to_csv(index=False),
-                             "all_wires.csv", "text/csv", key="csv_all")
-        if a[1].button("Prepare ZIP of all images", key="prep_all"):
-            with st.spinner("Building maps and tables for all images …"):
-                cache["all"] = report.all_images_zip(list(results.values()),
-                                                     {n: im.pixels for n, im in images.items()})
-        if "all" in cache:
-            a[1].download_button("⬇ ZIP (all images)", cache["all"], "aunw_wires_all_images.zip",
-                                 "application/zip", key="zip_all")
+    c = st.columns([1, 1, 1, 2])
+    target = None
+    if c[0].button("💾 Save this image", type="primary", key=f"save_{name}"):
+        with st.spinner("Writing files …"):
+            files = {f"{name.rsplit('.', 1)[0]}/{k}": v
+                     for k, v in report.files_for_image(image, r).items()}
+            target = report.save_files(files, Path(folder))
+    if c[1].button(f"💾 Save all {len(results)} images", key="save_all"):
+        with st.spinner(f"Writing files for {len(results)} images …"):
+            target = report.save_files(report.all_files(
+                list(results.values()), {n: im.pixels for n, im in images.items()}), Path(folder))
+    if target is not None:
+        st.session_state["last_saved"] = str(target)
+    last = st.session_state.get("last_saved")
+    if last:
+        st.success(f"Saved to **{last}**")
+        if c[2].button("📂 Open folder", key="open_folder"):
+            report.open_folder(Path(last))
 
 
 def render() -> None:

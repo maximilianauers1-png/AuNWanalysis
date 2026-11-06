@@ -40,14 +40,17 @@ def sidebar() -> str:
         st.markdown("## 🔬 AuNW Analysis")
         st.caption("Length & width of gold nanowires in SEM images")
         st.markdown("---")
-        labels = {k: (f"{lbl}  ✓" if s and status.get(s) else lbl) for k, lbl, _, s in STEPS}
-        # The ✓ markers change the labels, and Streamlit re-creates a widget whose labels
-        # change. The current page is therefore kept in our own state and passed as index.
-        keys = [k for k, *_ in STEPS]
-        current = st.session_state.setdefault("current_page", "overview")
-        page = st.radio("Workflow", keys, index=keys.index(current), format_func=labels.get,
-                        label_visibility="collapsed")
-        st.session_state["current_page"] = page
+        # The labels must never change: Streamlit re-creates a widget whose labels change,
+        # and a click on the old one is lost. The ✓ of finished steps is therefore drawn
+        # with CSS (::after), which does not touch the widget.
+        labels = {k: lbl for k, lbl, _, _ in STEPS}
+        page = st.radio("Workflow", [k for k, *_ in STEPS], format_func=labels.get,
+                        key="page", label_visibility="collapsed")
+        done = [i + 1 for i, (_, _, _, s) in enumerate(STEPS) if s and status.get(s)]
+        if done:
+            sel = ", ".join(f'section[data-testid="stSidebar"] div[role="radiogroup"] > div:nth-child({i}) '
+                            f'label[data-testid="stRadioOption"] p::after' for i in done)
+            st.markdown(f"<style>{sel} {{content: '  ✓';}}</style>", unsafe_allow_html=True)
         st.markdown("---")
         models = common.available_models()
         if models:
